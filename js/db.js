@@ -1,6 +1,13 @@
 // On-device storage. Everything lives in IndexedDB so capture works with no signal.
+// Records are encrypted here, so the rest of the app reads and writes plain values.
+import { encryptBytes, decryptBytes, encryptJson, decryptJson } from './crypto.js';
+
 const DB_NAME = 'site-inspect';
+const SECRET_SETTINGS = ['openaiKey', 'anthropicKey', 'inspector'];
 let dbPromise;
+let dataKey = null;
+
+export const setDataKey = (key) => { dataKey = key; };
 
 function open() {
   dbPromise ??= new Promise((resolve, reject) => {
@@ -31,13 +38,36 @@ async function run(store, mode, fn) {
   });
 }
 
-export const getInspection = (id) => run('inspections', 'readonly', (s) => s.get(id));
-export const putInspection = (v) => run('inspections', 'readwrite', (s) => s.put(v));
-export const allInspections = async () =>
-  (await run('inspections', 'readonly', (s) => s.getAll())).sort((a, b) => b.createdAt - a.createdAt);
+// Only the ids needed to find a record stay readable. Records saved before encryption have no
+// `sealed` field and are read as they are until sealExisting has run.
+async function seal({ thumb, ...value }) {
+  const record = { id: value.id, sealed: await encryptJson(dataKey, value) };
+  if (value.inspectionId) record.inspectionId = value.inspectionId;
+  if (thumb) record.thumb = await encryptBytes(dataKey, thumb);
+  return record;
+}
 
-export const getItem = (id) => run('items', 'readonly', (s) => s.get(id));
-export const putItem = (v) => run('items', 'readwrite', (s) => s.put(v));
+async function unseal(record) {
+  if (!record?.sealed) return record;
+  const value = await decryptJson(dataKey, record.sealed);
+  if (record.thumb) value.thumb = await decryptBytes(dataKey, record.thumb);
+  return value;
+}
+
+export const getInspection = async (id) => unseal(await run('inspections', 'readonly', (s) => s.get(id)));
+export async function putInspection(v) {
+  const record = await seal(v);
+  return run('inspections', 'readwrite', (s) => s.put(record));
+}
+export const allInspections = async () =>
+  (await Promise.all((await run('inspections', 'readonly', (s) => s.getAll())).map(unseal)))
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+export const getItem = async (id) => unseal(await run('items', 'readonly', (s) => s.get(id)));
+export async function putItem(v) {
+  const record = await seal(v);
+  return run('items', 'readwrite', (s) => s.put(record));
+}
 export async function deleteItem(id) {
   await run('media', 'readwrite', (s) => {
     s.delete(photoKey(id));
@@ -46,7 +76,7 @@ export async function deleteItem(id) {
   await run('items', 'readwrite', (s) => s.delete(id));
 }
 export const itemsFor = async (inspectionId) =>
-  (await run('items', 'readonly', (s) => s.index('inspectionId').getAll(inspectionId)))
+  (await Promise.all((await run('items', 'readonly', (s) => s.index('inspectionId').getAll(inspectionId))).map(unseal)))
     .sort((a, b) => a.createdAt - b.createdAt);
 
 export async function deleteInspection(id) {
@@ -60,14 +90,44 @@ export const photoKey = (id) => `${id}:photo`;
 export const audioKey = (id) => `${id}:audio`;
 
 export async function putMedia(key, blob) {
-  const buffer = await blob.arrayBuffer();
-  await run('media', 'readwrite', (s) => s.put({ buffer, type: blob.type }, key));
+  const sealed = await encryptBytes(dataKey, await blob.arrayBuffer());
+  await run('media', 'readwrite', (s) => s.put({ ...sealed, type: blob.type }, key));
 }
 
 export async function getMedia(key) {
   const media = await run('media', 'readonly', (s) => s.get(key));
-  return media && new Blob([media.buffer], { type: media.type });
+  if (!media) return media;
+  const buffer = media.buffer ?? await decryptBytes(dataKey, media);
+  return new Blob([buffer], { type: media.type });
 }
 
-export const getSetting = (k) => run('settings', 'readonly', (s) => s.get(k));
-export const setSetting = (k, v) => run('settings', 'readwrite', (s) => s.put(v, k));
+export async function getSetting(k) {
+  const value = await run('settings', 'readonly', (s) => s.get(k));
+  return value?.sealed ? decryptJson(dataKey, value.sealed) : value;
+}
+
+export async function setSetting(k, v) {
+  const value = SECRET_SETTINGS.includes(k) ? { sealed: await encryptJson(dataKey, v ?? '') } : v;
+  await run('settings', 'readwrite', (s) => s.put(value, k));
+}
+
+// Encrypts anything saved before the PIN lock existed. Safe to repeat if it's interrupted.
+export async function sealExisting() {
+  for (const store of ['inspections', 'items']) {
+    for (const record of await run(store, 'readonly', (s) => s.getAll())) {
+      if (record.sealed || record.photo) continue; // a record still holding a Blob hasn't been migrated
+      const sealed = await seal(record);
+      await run(store, 'readwrite', (s) => s.put(sealed));
+    }
+  }
+  for (const key of await run('media', 'readonly', (s) => s.getAllKeys())) {
+    const media = await run('media', 'readonly', (s) => s.get(key));
+    if (!media.buffer) continue;
+    const sealed = await encryptBytes(dataKey, media.buffer);
+    await run('media', 'readwrite', (s) => s.put({ ...sealed, type: media.type }, key));
+  }
+  for (const key of SECRET_SETTINGS) {
+    const value = await getSetting(key);
+    if (value !== undefined) await setSetting(key, value);
+  }
+}

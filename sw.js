@@ -1,8 +1,8 @@
 // Keeps the app itself available with no signal. Bump VERSION when files change.
-const VERSION = 'v10';
+const VERSION = 'v11';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png',
-  'js/app.js', 'js/ai.js', 'js/db.js', 'js/docx.js', 'js/whisper.js', 'js/whisper-worker.js',
+  'js/app.js', 'js/ai.js', 'js/crypto.js', 'js/db.js', 'js/docx.js', 'js/whisper.js', 'js/whisper-worker.js',
   'vendor/transformers.min.js', 'vendor/ort-wasm-simd-threaded.mjs', 'vendor/ort-wasm-simd-threaded.wasm',
 ];
 

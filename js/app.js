@@ -1,4 +1,5 @@
 import * as db from './db.js';
+import { createDataKey, lockKey, unlockKey } from './crypto.js';
 import { transcribe, draftReport } from './ai.js';
 import { buildDocx } from './docx.js';
 import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper } from './whisper.js';
@@ -6,7 +7,9 @@ import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper }
 const app = document.getElementById('app');
 const camera = document.getElementById('camera');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
-const APP_VERSION = 10
+const APP_VERSION = 11
+const MIN_PIN_LENGTH = 6;
+const AUTO_LOCK_MS = 5 * 60 * 1000;
 const SWIPE_OPEN_PX = -96;;
 const THUMB_EDGE = 480;
 const RISKS = ['Low', 'Medium', 'High', 'Critical'];
@@ -16,6 +19,9 @@ let objectUrls = [];
 let recorder = null;
 let busy = false;
 let startupNotice = '';
+let unlocked = false;
+let cameraOpen = false;
+let hiddenAt = null;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const today = () => new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
@@ -236,11 +242,15 @@ async function itemScreen(id, itemId) {
       <button class="danger" data-action="delete">${item.general ? 'Delete note' : 'Delete photo'}</button>
     </div>`;
 
+  let saving = Promise.resolve(); // one save at a time, so a slower older save can't undo a newer one
   app.querySelectorAll('[data-field]').forEach((field) => {
-    field.oninput = async () => {
-      const fresh = await db.getItem(itemId);
-      fresh[field.dataset.field] = field.value;
-      await db.putItem(fresh);
+    field.oninput = () => {
+      const text = field.value;
+      saving = saving.then(async () => {
+        const fresh = await db.getItem(itemId);
+        fresh[field.dataset.field] = text;
+        await db.putItem(fresh);
+      });
     };
   });
   app.querySelector('[data-action=record]').onclick = (e) => toggleRecording(e.target, id, itemId);
@@ -448,7 +458,36 @@ async function settingsScreen() {
     <label>Anthropic API key (writes the report) <input data-key="anthropicKey" value="${esc(anthropicKey)}" autocomplete="off" autocapitalize="off" spellcheck="false" type="password"></label>
     <p class="muted">Keys are stored only on this phone and only sent to their own service.</p>
     <p class="muted">${storage} Photos and audio are only on this phone. Saving the Word document is how you keep a copy elsewhere.</p>
+    <h2>PIN lock</h2>
+    <p class="muted">The app locks itself after ${AUTO_LOCK_MS / 60000} minutes in the background.</p>
+    <div class="stack">
+      <button data-action="lock-now">Lock now</button>
+    </div>
+    <form id="change-pin">
+      <label>Current PIN <input name="current" type="password" inputmode="numeric" autocomplete="off" required></label>
+      <label>New PIN <input name="next" type="password" inputmode="numeric" autocomplete="off" required></label>
+      <label>Repeat new PIN <input name="repeat" type="password" inputmode="numeric" autocomplete="off" required></label>
+      <div style="margin-top:12px"><button>Change PIN</button></div>
+      <p class="muted" data-role="pin-status" role="status"></p>
+    </form>
     <p class="muted">App version ${APP_VERSION}</p>`;
+  app.querySelector('[data-action=lock-now]').onclick = lockApp;
+  app.querySelector('#change-pin').onsubmit = async (e) => {
+    e.preventDefault();
+    const { current, next, repeat } = Object.fromEntries(new FormData(e.target));
+    const status = app.querySelector('[data-role=pin-status]');
+    const problem = pinProblem(next, repeat);
+    if (problem) { status.textContent = problem; return; }
+    status.textContent = 'Changing PIN…';
+    try {
+      const key = await unlockKey(current, await db.getSetting('lock'));
+      await db.setSetting('lock', await lockKey(next, key));
+      e.target.reset();
+      status.textContent = 'PIN changed.';
+    } catch {
+      status.textContent = "Your current PIN isn't right.";
+    }
+  };
   app.querySelectorAll('[data-key]').forEach((el) => {
     el.onchange = async () => {
       await db.setSetting(el.dataset.key, el.value.trim());
@@ -482,10 +521,14 @@ async function settingsScreen() {
 function openCamera(inspectionId) {
   camera.dataset.inspection = inspectionId;
   camera.value = '';
+  cameraOpen = true;
   camera.click();
 }
 
+camera.oncancel = () => { cameraOpen = false; };
+
 camera.onchange = async () => {
+  cameraOpen = false;
   const file = camera.files[0];
   if (!file) return;
   const photo = new Blob([await file.arrayBuffer()], { type: file.type });
@@ -753,6 +796,7 @@ async function deliver(file) {
 // Routing
 
 async function route() {
+  if (!unlocked) return;
   if (recorder) recorder.stop();
   objectUrls.forEach(URL.revokeObjectURL);
   objectUrls = [];
@@ -788,14 +832,101 @@ async function migrateMedia() {
   }
 }
 
-async function start() {
+function pinProblem(pin, repeat) {
+  if (pin.length < MIN_PIN_LENGTH) return `Use at least ${MIN_PIN_LENGTH} characters.`;
+  if (pin !== repeat) return "The two PINs don't match.";
+  return '';
+}
+
+function pinScreen() {
+  app.innerHTML = `${header('Set a PIN')}
+    <p>Your PIN locks the app and encrypts everything saved in it.</p>
+    <div class="notice"><strong>Remember this PIN.</strong> It can't be reset. If you forget it, your saved inspections can't be recovered.</div>
+    <form id="pin-form">
+      <label>New PIN (${MIN_PIN_LENGTH} or more digits) <input name="pin" type="password" inputmode="numeric" autocomplete="off" required></label>
+      <label>Repeat PIN <input name="repeat" type="password" inputmode="numeric" autocomplete="off" required></label>
+      <button class="primary big" style="margin-top:20px">Set PIN</button>
+      <p class="error" data-role="error" hidden></p>
+    </form>`;
+  const form = app.querySelector('#pin-form');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const { pin, repeat } = Object.fromEntries(new FormData(form));
+    const error = app.querySelector('[data-role=error]');
+    const problem = pinProblem(pin, repeat);
+    error.textContent = problem;
+    error.hidden = !problem;
+    if (problem) return;
+    form.querySelector('button').disabled = true;
+    const key = await createDataKey();
+    await db.setSetting('lock', await lockKey(pin, key));
+    await openApp(key);
+  };
+}
+
+function lockScreen(lock) {
+  app.innerHTML = `${header('Site Inspect')}
+    <form id="unlock-form">
+      <label>PIN <input name="pin" type="password" inputmode="numeric" autocomplete="off" required autofocus></label>
+      <button class="primary big" style="margin-top:20px">Unlock</button>
+      <p class="error" data-role="error" hidden></p>
+    </form>`;
+  const form = app.querySelector('#unlock-form');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const button = form.querySelector('button');
+    const error = app.querySelector('[data-role=error]');
+    button.disabled = true;
+    error.hidden = true;
+    try {
+      await openApp(await unlockKey(form.pin.value, lock));
+    } catch (err) {
+      if (err.name !== 'OperationError') throw err;
+      error.textContent = "That PIN isn't right.";
+      error.hidden = false;
+      form.reset();
+      button.disabled = false;
+    }
+  };
+}
+
+async function openApp(key) {
+  db.setDataKey(key);
+  app.innerHTML = `${header('Site Inspect')}<p>Securing your saved inspections…</p>`;
   await migrateMedia();
+  await db.sealExisting();
   if (await db.getSetting('transcribing')) {
     await db.setSetting('transcribing', false);
     startupNotice = 'Transcription stopped before it finished, possibly because the phone ran low on memory or the app was closed. Finished notes are saved. Close other apps and tap the report button again to continue. If it keeps happening, choose the Small speech model in Settings.';
   }
+  unlocked = true;
   route();
 }
+
+async function lockApp() {
+  unlocked = false;
+  db.setDataKey(null);
+  objectUrls.forEach(URL.revokeObjectURL);
+  objectUrls = [];
+  lockScreen(await db.getSetting('lock'));
+}
+
+async function start() {
+  const lock = await db.getSetting('lock');
+  if (lock) lockScreen(lock);
+  else pinScreen();
+}
+
+// Work in progress keeps the key, because the camera and long jobs can briefly hide the app.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    hiddenAt = Date.now();
+  } else if (unlocked && hiddenAt && Date.now() - hiddenAt >= AUTO_LOCK_MS && !busy && !recorder && !cameraOpen) {
+    lockApp();
+  } else {
+    setTimeout(() => { cameraOpen = false; }, 3000); // not every iPhone reports a cancelled camera
+  }
+});
 
 window.addEventListener('hashchange', route);
 navigator.storage?.persist?.();
