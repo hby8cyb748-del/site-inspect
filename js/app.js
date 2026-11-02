@@ -7,6 +7,7 @@ const app = document.getElementById('app');
 const camera = document.getElementById('camera');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
 const RISKS = ['Low', 'Medium', 'High', 'Critical'];
+const COPILOT_PROMPT = `You are helping a workplace safety professional. The attached document contains numbered site inspection photos, each followed by the inspector's notes. Look at every photo and write a site inspection report with a summary, findings, risk ratings, recommended actions and timeframes. Refer to photos by number. Use only the document as evidence and keep the inspector's judgement. Do not invent facts or cite regulations unless the notes do. If you cannot view a photo, say so. Mark anything you add from a photo as "AI-suggested". Risk ratings and timeframes are suggestions for the inspector to review.`;
 
 let objectUrls = [];
 let recorder = null;
@@ -219,40 +220,92 @@ async function reportStartScreen(inspection, items) {
     <div class="stack" style="margin-top:12px">
       <button class="primary big" data-action="ai">Create report with AI</button>
       <button data-action="plain">Create without AI</button>
+      <button data-action="copilot">Prepare for Copilot</button>
     </div>
     <p class="muted">Without AI, nothing goes to Anthropic. You get one finding per photo using your notes${engine === 'openai' ? ', and any audio without text is left out' : ', transcribed on this phone'}.</p>
+    <p class="muted">Prepare for Copilot makes a document of your photos and notes on this phone, for you to upload to Microsoft Copilot yourself.</p>
     <div class="progress" data-role="progress" hidden></div>
-    <p class="error" data-role="error" hidden></p>`;
+    <p class="error" data-role="error" hidden></p>
+    <section data-role="copilot" hidden>
+      <h2>Ready for Copilot</h2>
+      <div class="stack">
+        <button class="primary" data-action="copilot-share">1. Save or share document</button>
+        <button data-action="copilot-copy">2. Copy prompt</button>
+        <textarea readonly rows="7" aria-label="Copilot prompt">${esc(COPILOT_PROMPT)}</textarea>
+      </div>
+      <p class="muted">Save it somewhere your work account can reach, then upload it to Microsoft 365 Copilot and paste the prompt. Check Copilot actually read your photos.</p>
+    </section>`;
+
+  const progress = app.querySelector('[data-role=progress]');
+  const say = (text) => { progress.hidden = false; progress.textContent = text; };
+  // Returns false if the user chooses not to carry on without every transcript.
+  const transcribeNotes = async () => {
+    if (engine !== 'phone' || !items.some((i) => i.audio && !i.transcript)) return true;
+    try {
+      await whileBusy(() => transcribePending(items, say));
+      progress.hidden = true;
+      return true;
+    } catch (err) {
+      progress.hidden = true;
+      return confirm(`Some audio couldn't be transcribed. (${err.message}) Carry on with the notes you have?`);
+    }
+  };
+
   app.querySelector('[data-action=ai]').onclick = () => createAiReport(inspection, items);
   app.querySelector('[data-action=plain]').onclick = async () => {
-    if (busy) return;
-    if (engine === 'phone' && items.some((i) => i.audio && !i.transcript)) {
-      const progress = app.querySelector('[data-role=progress]');
-      const say = (text) => { progress.hidden = false; progress.textContent = text; };
-      try {
-        await whileBusy(() => transcribePending(items, say));
-      } catch (err) {
-        progress.hidden = true;
-        if (!confirm(`Some audio couldn't be transcribed. (${err.message}) Create the report with the notes you have?`)) return;
-      }
-    }
-    inspection.report = {
-      executive_summary: '',
-      findings: items.map((item, n) => ({
-        title: `Photo ${n + 1}`,
-        photos: [n + 1],
-        description: [item.transcript, item.note].filter(Boolean).join(' — '),
-        hazard_type: '',
-        risk: 'Low',
-        action: '',
-        timeframe: '',
-        source: 'inspector',
-      })),
-      good_practice: [],
-      next_steps: [],
-    };
+    if (busy || !await transcribeNotes()) return;
+    inspection.report = notesReport(items, 'Low');
     await db.putInspection(inspection);
     reportScreen(inspection.id);
+  };
+  app.querySelector('[data-action=copilot]').onclick = async () => {
+    if (busy || !await transcribeNotes()) return;
+    const errorEl = app.querySelector('[data-role=error]');
+    const section = app.querySelector('[data-role=copilot]');
+    errorEl.hidden = true;
+    section.hidden = true;
+    try {
+      say('Building document…');
+      const file = await whileBusy(() => buildWordFile(inspection, items, notesReport(items, ''), {
+        title: 'Inspection Photos and Notes',
+        heading: 'Photos and notes',
+        appendix: false,
+        suffix: ' notes for Copilot',
+      }));
+      app.querySelector('[data-action=copilot-share]').onclick = () => deliver(file);
+      section.hidden = false;
+      progress.hidden = true;
+    } catch (err) {
+      progress.hidden = true;
+      errorEl.textContent = `Couldn't build the document. ${err.message}`;
+      errorEl.hidden = false;
+    }
+  };
+  app.querySelector('[data-action=copilot-copy]').onclick = async (e) => {
+    try {
+      await navigator.clipboard.writeText(COPILOT_PROMPT);
+      e.target.textContent = 'Prompt copied';
+    } catch {
+      e.target.textContent = 'Press and hold the text below to copy it';
+    }
+  };
+}
+
+function notesReport(items, risk) {
+  return {
+    executive_summary: '',
+    findings: items.map((item, n) => ({
+      title: `Photo ${n + 1}`,
+      photos: [n + 1],
+      description: [item.transcript, item.note].filter(Boolean).join(' — '),
+      hazard_type: '',
+      risk,
+      action: '',
+      timeframe: '',
+      source: 'inspector',
+    })),
+    good_practice: [],
+    next_steps: [],
   };
 }
 
@@ -509,6 +562,25 @@ async function createAiReport(inspection, items) {
   }
 }
 
+async function buildWordFile(inspection, items, report, { suffix = '', ...options } = {}) {
+  const photos = [];
+  for (const [n, item] of items.entries()) {
+    const { bytes, width, height } = await toJpeg(item.photo, 1400, 0.8);
+    photos.push({
+      number: n + 1,
+      time: clock(item.createdAt),
+      transcript: item.transcript,
+      note: item.note,
+      jpeg: bytes,
+      width,
+      height,
+    });
+  }
+  const blob = buildDocx({ inspection, report, photos, ...options });
+  const name = `${inspection.date} ${inspection.site}${suffix}`.replace(/[^\w -]+/g, '').trim();
+  return new File([blob], `${name}.docx`, { type: blob.type });
+}
+
 async function saveWord(inspection, items) {
   const button = app.querySelector('[data-action=word]');
   const errorEl = app.querySelector('[data-role=error]');
@@ -517,22 +589,7 @@ async function saveWord(inspection, items) {
   button.disabled = true;
   button.textContent = 'Building document…';
   try {
-    const photos = [];
-    for (const [n, item] of items.entries()) {
-      const { bytes, width, height } = await toJpeg(item.photo, 1400, 0.8);
-      photos.push({
-        number: n + 1,
-        time: clock(item.createdAt),
-        transcript: item.transcript,
-        note: item.note,
-        jpeg: bytes,
-        width,
-        height,
-      });
-    }
-    const blob = buildDocx({ inspection, report: inspection.report, photos });
-    const name = `${inspection.date} ${inspection.site}`.replace(/[^\w -]+/g, '').trim();
-    const file = new File([blob], `${name}.docx`, { type: blob.type });
+    const file = await buildWordFile(inspection, items, inspection.report);
     button.textContent = 'Share or save document';
     button.disabled = false;
     // Building takes long enough that iOS no longer counts it as a tap, so share needs a second one.

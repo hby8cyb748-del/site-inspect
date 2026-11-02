@@ -126,7 +126,7 @@ const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
 
 // photos: [{ number, time, transcript, note, jpeg (Uint8Array), width, height }]
-export function buildDocx({ inspection, report, photos }) {
+export function buildDocx({ inspection, report, photos, title = 'Safety Inspection Report', heading = 'Findings', appendix = true }) {
   const byNumber = new Map(photos.map((p) => [p.number, p]));
   const media = [];
   const placed = new Set();
@@ -136,7 +136,7 @@ export function buildDocx({ inspection, report, photos }) {
   };
   const picture = (p) => imageXml(relFor(p), media.length, p, `Photo ${p.number}`) + para(`Photo ${p.number}`);
 
-  let body = para(`Safety Inspection Report`, 'Title');
+  let body = para(title, 'Title');
   body += table([
     ['Site', inspection.site],
     ['Area', inspection.area || '—'],
@@ -150,7 +150,7 @@ export function buildDocx({ inspection, report, photos }) {
   }
 
   if (report.findings.length) {
-    body += para('Findings', 'Heading1');
+    body += para(heading, 'Heading1');
     report.findings.forEach((f, i) => {
       body += para(`${i + 1}. ${f.title}`, 'Heading2');
       for (const n of f.photos) {
@@ -184,7 +184,7 @@ export function buildDocx({ inspection, report, photos }) {
   }
 
   const log = photos.filter((p) => p.transcript || p.note);
-  if (log.length) {
+  if (appendix && log.length) {
     body += para('Appendix: inspector notes', 'Heading1');
     body += table(log.map((p) => [
       `Photo ${p.number} (${p.time})`,
