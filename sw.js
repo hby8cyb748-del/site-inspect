@@ -1,5 +1,5 @@
 // Keeps the app itself available with no signal. Bump VERSION when files change.
-const VERSION = 'v9';
+const VERSION = 'v10';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png',
   'js/app.js', 'js/ai.js', 'js/db.js', 'js/docx.js', 'js/whisper.js', 'js/whisper-worker.js',
@@ -7,7 +7,9 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's copy, or an update could keep old code for good.
+  const fresh = FILES.map((f) => new Request(f, { cache: 'reload' }));
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(fresh)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

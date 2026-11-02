@@ -6,7 +6,7 @@ import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper }
 const app = document.getElementById('app');
 const camera = document.getElementById('camera');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
-const APP_VERSION = 9
+const APP_VERSION = 10
 const SWIPE_OPEN_PX = -96;;
 const THUMB_EDGE = 480;
 const RISKS = ['Low', 'Medium', 'High', 'Critical'];
