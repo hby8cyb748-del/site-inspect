@@ -388,14 +388,30 @@ async function toggleRecording(button, inspectionId, itemId) {
 
 // Reports
 
+// Safari can fail to read a stored photo directly, so copy it into memory and decode it as a normal image.
+async function loadImage(blob) {
+  const copy = new Blob([await blob.arrayBuffer()], { type: blob.type || 'image/jpeg' });
+  const url = URL.createObjectURL(copy);
+  const image = new Image();
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("A saved photo couldn't be opened."));
+      image.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  return image;
+}
+
 async function toJpeg(blob, maxEdge, quality) {
-  const bitmap = await createImageBitmap(blob);
-  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const image = await loadImage(blob);
+  const scale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
+  canvas.width = Math.round(image.naturalWidth * scale);
+  canvas.height = Math.round(image.naturalHeight * scale);
+  canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
   const jpeg = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
   return { bytes: new Uint8Array(await jpeg.arrayBuffer()), width: canvas.width, height: canvas.height };
 }
