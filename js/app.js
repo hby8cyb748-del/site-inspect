@@ -491,6 +491,8 @@ async function whileBusy(work) {
   }
 }
 
+// Note on readings: on iPhones, a stored photo or audio Blob can stop being readable once its
+// note has been saved again. Always fetch the note just before reading its media.
 async function transcribePending(items, say) {
   const needed = items.filter((i) => i.audio && !i.transcript);
   if (!needed.length) return;
@@ -501,8 +503,9 @@ async function transcribePending(items, say) {
   // If the phone kills the app, this is still set at next launch so the app can explain what happened.
   await db.setSetting('transcribing', !useOpenAi);
   try {
-    for (const [n, item] of needed.entries()) {
+    for (const [n, { id }] of needed.entries()) {
       const label = `audio note ${n + 1} of ${needed.length}`;
+      const item = await db.getItem(id); // see the note on readings below
       let text;
       if (useOpenAi) {
         say(`Transcribing ${label}…`);
@@ -516,6 +519,7 @@ async function transcribePending(items, say) {
       }
       item.transcript = text || '(no speech detected)';
       await db.putItem(item); // saved one at a time so a retry picks up where it stopped
+      items.find((i) => i.id === id).transcript = item.transcript;
     }
   } finally {
     releaseWhisper();
@@ -549,8 +553,9 @@ async function createAiReport(inspection, items) {
 
       const maxEdge = items.length > 30 ? 1100 : 1568;
       const photos = [];
-      for (const [n, item] of items.entries()) {
+      for (const [n, { id }] of items.entries()) {
         say(`Preparing photo ${n + 1} of ${items.length}…`);
+        const item = await db.getItem(id);
         const { bytes } = await toJpeg(item.photo, maxEdge, 0.8);
         photos.push({ number: n + 1, transcript: item.transcript, note: item.note, base64: toBase64(bytes) });
       }
@@ -574,7 +579,8 @@ async function createAiReport(inspection, items) {
 
 async function buildWordFile(inspection, items, report, { suffix = '', ...options } = {}) {
   const photos = [];
-  for (const [n, item] of items.entries()) {
+  for (const [n, { id }] of items.entries()) {
+    const item = await db.getItem(id);
     const { bytes, width, height } = await toJpeg(item.photo, 1400, 0.8);
     photos.push({
       number: n + 1,
