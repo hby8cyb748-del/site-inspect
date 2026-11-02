@@ -1,5 +1,7 @@
-// On-phone transcription. The model is unloaded after each batch because iPhones limit web app memory.
+// On-phone transcription. Callers unload the model after each note because iPhones limit web app memory.
 const SAMPLE_RATE = 16000; // what Whisper expects
+const MIN_TIME_LIMIT_S = 180;
+const TIME_LIMIT_PER_AUDIO_S = 15; // an iPhone can kill the worker silently, so don't wait forever
 
 export const MODELS = {
   'Xenova/whisper-base.en': 'Standard (about 80 MB, more accurate)',
@@ -48,6 +50,7 @@ function send(message, transfer) {
 export function releaseWhisper() {
   worker?.terminate();
   worker = null;
+  pending.clear();
   onDownload = null;
   downloads.clear();
 }
@@ -70,5 +73,17 @@ async function decode(blob) {
 
 export async function transcribeOnPhone(blob, model) {
   const audio = await decode(blob);
-  return send({ type: 'transcribe', model, audio }, [audio.buffer]);
+  const seconds = audio.length / SAMPLE_RATE;
+  const limit = Math.max(MIN_TIME_LIMIT_S, seconds * TIME_LIMIT_PER_AUDIO_S) * 1000;
+  let timer;
+  try {
+    return await Promise.race([
+      send({ type: 'transcribe', model, audio }, [audio.buffer]),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Transcription stopped responding.')), limit);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

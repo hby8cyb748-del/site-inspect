@@ -12,6 +12,7 @@ const COPILOT_PROMPT = `You are helping a workplace safety professional. The att
 let objectUrls = [];
 let recorder = null;
 let busy = false;
+let startupNotice = '';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const today = () => new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
@@ -497,19 +498,28 @@ async function transcribePending(items, say) {
     ['transcribeWith', 'openaiKey', 'whisperModel'].map(db.getSetting));
   const useOpenAi = engine === 'openai';
   const model = whisperModel ?? DEFAULT_MODEL;
+  // If the phone kills the app, this is still set at next launch so the app can explain what happened.
+  await db.setSetting('transcribing', !useOpenAi);
   try {
-    if (!useOpenAi) {
-      say('Loading the speech model…');
-      await loadWhisper(model, (percent) => say(`Downloading the speech model… ${percent}%`));
-    }
     for (const [n, item] of needed.entries()) {
-      say(`Transcribing audio note ${n + 1} of ${needed.length}…`);
-      const text = useOpenAi ? await transcribe(item.audio, openaiKey) : await transcribeOnPhone(item.audio, model);
+      const label = `audio note ${n + 1} of ${needed.length}`;
+      let text;
+      if (useOpenAi) {
+        say(`Transcribing ${label}…`);
+        text = await transcribe(item.audio, openaiKey);
+      } else {
+        say(`Loading the speech model for ${label}…`);
+        await loadWhisper(model);
+        say(`Transcribing ${label}…`);
+        text = await transcribeOnPhone(item.audio, model);
+        releaseWhisper(); // a fresh start for each note keeps memory from building up
+      }
       item.transcript = text || '(no speech detected)';
       await db.putItem(item); // saved one at a time so a retry picks up where it stopped
     }
   } finally {
     releaseWhisper();
+    await db.setSetting('transcribing', false);
   }
 }
 
@@ -626,15 +636,27 @@ async function route() {
   objectUrls.forEach(URL.revokeObjectURL);
   objectUrls = [];
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  if (parts[0] === 'new') return newScreen();
-  if (parts[0] === 'settings') return settingsScreen();
-  if (parts[0] === 'i' && parts[2] === 'report') return reportScreen(parts[1]);
-  if (parts[0] === 'i' && parts[2]) return itemScreen(parts[1], parts[2]);
-  if (parts[0] === 'i') return inspectionScreen(parts[1]);
-  return homeScreen();
+  if (parts[0] === 'new') await newScreen();
+  else if (parts[0] === 'settings') await settingsScreen();
+  else if (parts[0] === 'i' && parts[2] === 'report') await reportScreen(parts[1]);
+  else if (parts[0] === 'i' && parts[2]) await itemScreen(parts[1], parts[2]);
+  else if (parts[0] === 'i') await inspectionScreen(parts[1]);
+  else await homeScreen();
+  if (startupNotice) {
+    app.insertAdjacentHTML('afterbegin', `<div class="notice" style="margin-bottom:12px">${startupNotice}</div>`);
+    startupNotice = '';
+  }
+}
+
+async function start() {
+  if (await db.getSetting('transcribing')) {
+    await db.setSetting('transcribing', false);
+    startupNotice = 'Transcription stopped before it finished, possibly because the phone ran low on memory or the app was closed. Finished notes are saved. Close other apps and tap the report button again to continue. If it keeps happening, choose the Small speech model in Settings.';
+  }
+  route();
 }
 
 window.addEventListener('hashchange', route);
 navigator.storage?.persist?.();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-route();
+start();
