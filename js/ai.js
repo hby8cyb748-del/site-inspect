@@ -108,7 +108,7 @@ export async function draftReport({ inspection, photos, key, onActivity }) {
   if (!res.ok) throw await failure('Claude', res);
 
   const { text, stopReason } = await readStream(res, onActivity);
-  if (stopReason === 'refusal') throw new Error('Claude declined to write this report. Try "Create without AI".');
+  if (stopReason === 'refusal') throw new Error('Claude declined to write this report. Try "Prepare for Copilot".');
   if (stopReason === 'max_tokens') throw new Error('The report was too long and was cut off. Try again with fewer photos.');
   try {
     return JSON.parse(text);

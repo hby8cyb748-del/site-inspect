@@ -6,7 +6,7 @@ import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper }
 const app = document.getElementById('app');
 const camera = document.getElementById('camera');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
-const APP_VERSION = 7;
+const APP_VERSION = 8;
 const THUMB_EDGE = 480;
 const RISKS = ['Low', 'Medium', 'High', 'Critical'];
 const COPILOT_PROMPT = `You are helping a workplace safety professional. The attached document contains numbered site inspection photos, each followed by the inspector's notes. Look at every photo and write a site inspection report with a summary, findings, risk ratings, recommended actions and timeframes. Refer to photos by number. Use only the document as evidence and keep the inspector's judgement. Do not invent facts or cite regulations unless the notes do. If you cannot view a photo, say so. Mark anything you add from a photo as "AI-suggested". Risk ratings and timeframes are suggestions for the inspector to review.`;
@@ -225,11 +225,9 @@ async function reportStartScreen(inspection, items) {
     </div>
     <div class="stack" style="margin-top:12px">
       <button class="primary big" data-action="ai">Create report with AI</button>
-      <button data-action="plain">Create without AI</button>
       <button data-action="copilot">Prepare for Copilot</button>
     </div>
-    <p class="muted">Without AI, nothing goes to Anthropic. You get one finding per photo using your notes${engine === 'openai' ? ', and any audio without text is left out' : ', transcribed on this phone'}.</p>
-    <p class="muted">Prepare for Copilot makes a document of your photos and notes on this phone, for you to upload to Microsoft Copilot yourself.</p>
+    <p class="muted">Prepare for Copilot makes a document of your photos and notes on this phone, for you to upload to Microsoft Copilot yourself${engine === 'openai' ? '. Any audio without text is left out' : ''}.</p>
     <div class="progress" data-role="progress" hidden></div>
     <p class="error" data-role="error" hidden></p>
     <section data-role="copilot" hidden>
@@ -258,12 +256,6 @@ async function reportStartScreen(inspection, items) {
   };
 
   app.querySelector('[data-action=ai]').onclick = () => createAiReport(inspection, items);
-  app.querySelector('[data-action=plain]').onclick = async () => {
-    if (busy || !await transcribeNotes()) return;
-    inspection.report = notesReport(items, 'Low');
-    await db.putInspection(inspection);
-    reportScreen(inspection.id);
-  };
   app.querySelector('[data-action=copilot]').onclick = async () => {
     if (busy || !await transcribeNotes()) return;
     const errorEl = app.querySelector('[data-role=error]');
@@ -272,7 +264,7 @@ async function reportStartScreen(inspection, items) {
     section.hidden = true;
     try {
       say('Building document…');
-      const file = await whileBusy(() => buildWordFile(inspection, items, notesReport(items, ''), {
+      const file = await whileBusy(() => buildWordFile(inspection, items, notesReport(items), {
         title: 'Inspection Photos and Notes',
         heading: 'Photos and notes',
         appendix: false,
@@ -297,7 +289,7 @@ async function reportStartScreen(inspection, items) {
   };
 }
 
-function notesReport(items, risk) {
+function notesReport(items) {
   return {
     executive_summary: '',
     findings: items.map((item, n) => ({
@@ -305,7 +297,7 @@ function notesReport(items, risk) {
       photos: [n + 1],
       description: [item.transcript, item.note].filter(Boolean).join(' — '),
       hazard_type: '',
-      risk,
+      risk: '',
       action: '',
       timeframe: '',
       source: 'inspector',
