@@ -71,6 +71,11 @@ button.icon { width: auto; min-height: 48px; min-width: 48px; padding: 8px 12px;
 .card + .card { margin-top: 10px; }
 .card strong { display: block; overflow-wrap: anywhere; }
 
+.swipe { position: relative; overflow: hidden; border-radius: 12px; }
+.swipe + .swipe { margin-top: 10px; }
+.swipe-card { position: relative; z-index: 1; margin: 0; touch-action: pan-y; transition: transform .18s ease; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+button.swipe-delete { position: absolute; top: 0; right: 0; bottom: 0; width: 96px; min-height: 0; padding: 0; border: 0; border-radius: 0; background: #b3261e; color: #fff; }
+
 label { display: block; margin-top: 14px; font-size: 15px; font-weight: 600; }
 input, textarea, select {
   display: block;

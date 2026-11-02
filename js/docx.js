@@ -126,7 +126,7 @@ const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
 
 // photos: [{ number, time, transcript, note, jpeg (Uint8Array), width, height }]
-export function buildDocx({ inspection, report, photos, title = 'Safety Inspection Report', heading = 'Findings', appendix = true }) {
+export function buildDocx({ inspection, report, photos, title = 'Safety Inspection Report', heading = 'Findings', appendix = true, notes = [] }) {
   const byNumber = new Map(photos.map((p) => [p.number, p]));
   const media = [];
   const placed = new Set();
@@ -183,13 +183,14 @@ export function buildDocx({ inspection, report, photos, title = 'Safety Inspecti
     body += leftover.map(picture).join('');
   }
 
-  const log = photos.filter((p) => p.transcript || p.note);
+  const log = photos.filter((p) => p.transcript || p.note).map((p) => [
+    `Photo ${p.number} (${p.time})`,
+    [p.transcript, p.note].filter(Boolean).join(' — '),
+  ]);
+  log.push(...notes.map((n) => [n.label, n.text]));
   if (appendix && log.length) {
     body += para('Appendix: inspector notes', 'Heading1');
-    body += table(log.map((p) => [
-      `Photo ${p.number} (${p.time})`,
-      [p.transcript, p.note].filter(Boolean).join(' — '),
-    ]));
+    body += table(log);
   }
 
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

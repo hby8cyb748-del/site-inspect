@@ -6,10 +6,11 @@ import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper }
 const app = document.getElementById('app');
 const camera = document.getElementById('camera');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
-const APP_VERSION = 8;
+const APP_VERSION = 9
+const SWIPE_OPEN_PX = -96;;
 const THUMB_EDGE = 480;
 const RISKS = ['Low', 'Medium', 'High', 'Critical'];
-const COPILOT_PROMPT = `You are helping a workplace safety professional. The attached document contains numbered site inspection photos, each followed by the inspector's notes. Look at every photo and write a site inspection report with a summary, findings, risk ratings, recommended actions and timeframes. Refer to photos by number. Use only the document as evidence and keep the inspector's judgement. Do not invent facts or cite regulations unless the notes do. If you cannot view a photo, say so. Mark anything you add from a photo as "AI-suggested". Risk ratings and timeframes are suggestions for the inspector to review.`;
+const COPILOT_PROMPT = `You are helping a workplace safety professional. The attached document contains numbered site inspection photos, each followed by the inspector's notes, and may contain general notes with no photo. Look at every photo and read every note, and write a site inspection report with a summary, findings, risk ratings, recommended actions and timeframes. Refer to photos by number. Use only the document as evidence and keep the inspector's judgement. Do not invent facts or cite regulations unless the notes do. If you cannot view a photo, say so. Mark anything you add from a photo as "AI-suggested". Risk ratings and timeframes are suggestions for the inspector to review.`;
 
 let objectUrls = [];
 let recorder = null;
@@ -26,6 +27,12 @@ const urlFor = (blob) => {
   return url;
 };
 const go = (hash) => { location.hash = hash; };
+const photoItems = (items) => items.filter((i) => !i.general);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+// Numbered among all general notes, then left out if nothing was ever recorded or typed.
+const generalNotes = (items) => items.filter((i) => i.general)
+  .map((item, n) => ({ ...item, number: n + 1 }))
+  .filter((i) => i.hasAudio || i.transcript || i.note);
 
 function header(title, back) {
   return `<header class="top">
@@ -38,17 +45,91 @@ function header(title, back) {
 
 async function homeScreen() {
   const inspections = await db.allInspections();
-  const counts = await Promise.all(inspections.map(async (i) => (await db.itemsFor(i.id)).length));
+  const contents = await Promise.all(inspections.map((i) => db.itemsFor(i.id)));
   app.innerHTML = `
     <header class="top"><h1>Site Inspect</h1><a class="button icon" href="#/settings" style="width:auto;border:0;background:none">Settings</a></header>
     <button class="primary big" data-action="new">New inspection</button>
     <h2>Inspections</h2>
     ${inspections.length ? inspections.map((i, n) => `
-      <a class="card" href="#/i/${i.id}">
-        <strong>${esc(i.site)}${i.area ? ` — ${esc(i.area)}` : ''}</strong>
-        <span class="muted">${esc(i.date)} · ${counts[n]} photo${counts[n] === 1 ? '' : 's'} · ${i.report ? 'Report ready' : i.finished ? 'Finished' : 'In progress'}</span>
-      </a>`).join('') : '<p class="muted">Nothing yet. Start your first inspection above.</p>'}`;
+      <div class="swipe" data-id="${i.id}">
+        <button class="swipe-delete" tabindex="-1">Delete</button>
+        <a class="card swipe-card" href="#/i/${i.id}" draggable="false">
+          <strong>${esc(i.site)}${i.area ? ` — ${esc(i.area)}` : ''}</strong>
+          <span class="muted">${esc(i.date)} · ${plural(photoItems(contents[n]).length, 'photo')} · ${i.report ? 'Report ready' : i.finished ? 'Finished' : 'In progress'}</span>
+        </a>
+      </div>`).join('') : '<p class="muted">Nothing yet. Start your first inspection above.</p>'}`;
   app.querySelector('[data-action=new]').onclick = () => go('#/new');
+  const rows = [...app.querySelectorAll('.swipe')];
+  rows.forEach((row) => attachSwipe(row, rows));
+  rows.forEach((row, n) => {
+    row.querySelector('.swipe-delete').onclick = async () => {
+      const photos = plural(photoItems(contents[n]).length, 'photo');
+      if (!confirm(`Delete this inspection, its report and its ${photos}? This can't be undone.`)) return;
+      await db.deleteInspection(row.dataset.id);
+      homeScreen();
+    };
+  });
+}
+
+function attachSwipe(row, rows) {
+  const card = row.querySelector('.swipe-card');
+  let start = null;
+  let horizontal = null;
+  let offset = 0;
+  let swallowClick = false;
+
+  const setOpen = (open) => {
+    row.classList.toggle('open', open);
+    offset = open ? SWIPE_OPEN_PX : 0;
+    card.style.transform = open ? `translateX(${SWIPE_OPEN_PX}px)` : '';
+  };
+  const finish = () => {
+    start = null;
+    card.style.transition = '';
+  };
+
+  row.close = () => setOpen(false);
+  card.onpointerdown = (e) => {
+    start = { x: e.clientX, y: e.clientY, from: offset };
+    horizontal = null;
+    card.style.transition = 'none';
+  };
+  card.onpointermove = (e) => {
+    if (!start) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    if (horizontal === null) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      horizontal = Math.abs(dx) > Math.abs(dy);
+      if (!horizontal) return finish(); // leave vertical movement to page scrolling
+      card.setPointerCapture(e.pointerId);
+      rows.filter((r) => r !== row).forEach((r) => r.close());
+    }
+    offset = Math.max(SWIPE_OPEN_PX, Math.min(0, start.from + dx));
+    card.style.transform = `translateX(${offset}px)`;
+  };
+  card.onpointerup = () => {
+    if (!start) return;
+    const wasSwipe = horizontal;
+    finish();
+    if (wasSwipe) {
+      swallowClick = true;
+      setOpen(offset < SWIPE_OPEN_PX / 2);
+    }
+  };
+  card.onpointercancel = () => {
+    finish();
+    setOpen(row.classList.contains('open'));
+  };
+  card.onclick = (e) => {
+    if (swallowClick) {
+      swallowClick = false;
+      e.preventDefault();
+    } else if (row.classList.contains('open')) {
+      e.preventDefault();
+      setOpen(false);
+    }
+  };
 }
 
 async function newScreen() {
@@ -84,27 +165,48 @@ async function inspectionScreen(id) {
   const inspection = await db.getInspection(id);
   if (!inspection) return go('#/');
   const items = await db.itemsFor(id);
+  const photos = photoItems(items);
+  const notes = items.filter((i) => i.general);
   app.innerHTML = `${header(inspection.site, '#/')}
-    <p class="muted">${esc(inspection.area)}${inspection.area ? ' · ' : ''}${esc(inspection.date)} · ${items.length} photo${items.length === 1 ? '' : 's'}</p>
+    <p class="muted">${esc(inspection.area)}${inspection.area ? ' · ' : ''}${esc(inspection.date)} · ${plural(photos.length, 'photo')}${notes.length ? ` · ${plural(notes.length, 'general note')}` : ''}</p>
     <div class="stack">
       <button class="primary big" data-action="photo">Take photo</button>
+      <button data-action="note">Add general note</button>
       <button data-action="finish" ${items.length ? '' : 'disabled'}>${inspection.report ? 'View report' : 'Finish inspection'}</button>
     </div>
     <div class="grid">
-      ${items.map((item, n) => `<a class="thumb" href="#/i/${id}/${item.id}">
+      ${photos.map((item, n) => `<a class="thumb" href="#/i/${id}/${item.id}">
         <img src="${thumbUrl(item)}" alt="Photo ${n + 1}">
         <span>${n + 1}${item.hasAudio ? ' 🎙' : ''}${item.note ? ' ✎' : ''}</span>
       </a>`).join('')}
     </div>
+    ${notes.length ? `<h2>General notes</h2>${notes.map((item, n) => `
+      <a class="card" href="#/i/${id}/${item.id}">
+        <strong>General note ${n + 1}${item.hasAudio ? ' 🎙' : ''}</strong>
+        <span class="muted">${esc((item.note || item.transcript || (item.hasAudio ? 'Audio note' : 'Empty')).slice(0, 80))}</span>
+      </a>`).join('')}` : ''}
     <div style="margin-top:32px"><button class="danger" data-action="delete">Delete inspection</button></div>`;
   app.querySelector('[data-action=photo]').onclick = () => openCamera(id);
+  app.querySelector('[data-action=note]').onclick = async () => {
+    const item = {
+      id: crypto.randomUUID(),
+      inspectionId: id,
+      general: true,
+      hasAudio: false,
+      transcript: '',
+      note: '',
+      createdAt: Date.now(),
+    };
+    await db.putItem(item);
+    go(`#/i/${id}/${item.id}`);
+  };
   app.querySelector('[data-action=finish]').onclick = async () => {
     inspection.finished = true;
     await db.putInspection(inspection);
     go(`#/i/${id}/report`);
   };
   app.querySelector('[data-action=delete]').onclick = async () => {
-    if (!confirm(`Delete this inspection and its ${items.length} photos? This can't be undone.`)) return;
+    if (!confirm(`Delete this inspection and its ${plural(photos.length, 'photo')}? This can't be undone.`)) return;
     await db.deleteInspection(id);
     go('#/');
   };
@@ -114,22 +216,24 @@ async function itemScreen(id, itemId) {
   const item = await db.getItem(itemId);
   if (!item) return go(`#/i/${id}`);
   const items = await db.itemsFor(id);
-  const number = items.findIndex((i) => i.id === itemId) + 1;
-  const photo = await db.getMedia(db.photoKey(itemId));
+  const siblings = items.filter((i) => Boolean(i.general) === Boolean(item.general));
+  const number = siblings.findIndex((i) => i.id === itemId) + 1;
+  const name = item.general ? `General note ${number}` : `Photo ${number}`;
+  const photo = item.general ? null : await db.getMedia(db.photoKey(itemId));
   const audio = item.hasAudio ? await db.getMedia(db.audioKey(itemId)) : null;
-  app.innerHTML = `${header(`Photo ${number}`, `#/i/${id}`)}
-    <img class="photo" src="${urlFor(photo)}" alt="Photo ${number}">
+  app.innerHTML = `${header(name, `#/i/${id}`)}
+    ${photo ? `<img class="photo" src="${urlFor(photo)}" alt="${name}">` : '<p class="muted">An observation that is not tied to a photo.</p>'}
     <div class="stack" style="margin-top:12px">
       <button class="primary big" data-action="record">${audio ? 'Re-record note' : 'Record note'}</button>
       <p class="error" data-role="record-error" hidden></p>
     </div>
     ${audio ? `<audio controls src="${urlFor(audio)}"></audio>` : ''}
     ${item.transcript ? `<label>Transcript <textarea data-field="transcript">${esc(item.transcript)}</textarea></label>` : ''}
-    <label>Typed note (optional) <textarea data-field="note" placeholder="Or tap the mic on your keyboard to dictate">${esc(item.note)}</textarea></label>
+    <label>${item.general ? 'Typed note' : 'Typed note (optional)'} <textarea data-field="note" placeholder="Or tap the mic on your keyboard to dictate">${esc(item.note)}</textarea></label>
     <div class="stack" style="margin-top:16px">
-      <button class="big" data-action="next">Next photo</button>
-      <a class="button" href="#/i/${id}">Done with this photo</a>
-      <button class="danger" data-action="delete">Delete photo</button>
+      <button class="big" data-action="next">${item.general ? 'Take photo' : 'Next photo'}</button>
+      <a class="button" href="#/i/${id}">${item.general ? 'Done with this note' : 'Done with this photo'}</a>
+      <button class="danger" data-action="delete">${item.general ? 'Delete note' : 'Delete photo'}</button>
     </div>`;
 
   app.querySelectorAll('[data-field]').forEach((field) => {
@@ -142,7 +246,7 @@ async function itemScreen(id, itemId) {
   app.querySelector('[data-action=record]').onclick = (e) => toggleRecording(e.target, id, itemId);
   app.querySelector('[data-action=next]').onclick = () => openCamera(id);
   app.querySelector('[data-action=delete]').onclick = async () => {
-    if (!confirm('Delete this photo and its note?')) return;
+    if (!confirm(item.general ? 'Delete this note?' : 'Delete this photo and its note?')) return;
     await db.deleteItem(itemId);
     go(`#/i/${id}`);
   };
@@ -153,6 +257,7 @@ async function reportScreen(id) {
   if (!inspection) return go('#/');
   const items = await db.itemsFor(id);
   if (!inspection.report) return reportStartScreen(inspection, items);
+  const photos = photoItems(items);
 
   const { report } = inspection;
   app.innerHTML = `${header('Review report', `#/i/${id}`)}
@@ -167,7 +272,7 @@ async function reportScreen(id) {
     ${report.findings.map((f, n) => `<section class="finding">
       <span class="tag ${f.risk.toLowerCase()}">${esc(f.risk)}</span>
       ${f.source === 'ai_observation' ? '<span class="tag ai">AI-suggested</span>' : ''}
-      ${f.photos.map((p) => items[p - 1] ? `<img src="${thumbUrl(items[p - 1])}" alt="Photo ${p}">` : '').join('')}
+      ${f.photos.map((p) => photos[p - 1] ? `<img src="${thumbUrl(photos[p - 1])}" alt="Photo ${p}">` : '').join('')}
       <p class="muted">${f.photos.length ? `Photo ${f.photos.join(', ')}` : 'No photo'}</p>
       <label>Title <input data-path="findings.${n}.title" value="${esc(f.title)}"></label>
       <label>Risk rating <select data-path="findings.${n}.risk">${RISKS.map((r) => `<option ${r === f.risk ? 'selected' : ''}>${r}</option>`).join('')}</select></label>
@@ -217,7 +322,7 @@ async function reportStartScreen(inspection, items) {
   const audioCount = items.filter((i) => i.hasAudio).length;
   const engine = (await db.getSetting('transcribeWith')) ?? 'phone';
   app.innerHTML = `${header('Create report', `#/i/${inspection.id}`)}
-    <p>${items.length} photo${items.length === 1 ? '' : 's'}, ${audioCount} audio note${audioCount === 1 ? '' : 's'}.</p>
+    <p>${plural(photoItems(items).length, 'photo')}, ${plural(audioCount, 'audio note')}${generalNotes(items).length ? `, ${plural(generalNotes(items).length, 'general note')}` : ''}.</p>
     <div class="notice">
       <strong>Before you use AI:</strong> ${engine === 'openai'
         ? 'your audio goes to OpenAI for transcription, and your photos, notes and the site name go to Anthropic to write the report.'
@@ -290,18 +395,22 @@ async function reportStartScreen(inspection, items) {
 }
 
 function notesReport(items) {
+  const finding = (title, photos, item) => ({
+    title,
+    photos,
+    description: [item.transcript, item.note].filter(Boolean).join(' — '),
+    hazard_type: '',
+    risk: '',
+    action: '',
+    timeframe: '',
+    source: 'inspector',
+  });
   return {
     executive_summary: '',
-    findings: items.map((item, n) => ({
-      title: `Photo ${n + 1}`,
-      photos: [n + 1],
-      description: [item.transcript, item.note].filter(Boolean).join(' — '),
-      hazard_type: '',
-      risk: '',
-      action: '',
-      timeframe: '',
-      source: 'inspector',
-    })),
+    findings: [
+      ...photoItems(items).map((item, n) => finding(`Photo ${n + 1}`, [n + 1], item)),
+      ...generalNotes(items).map((item) => finding(`General note ${item.number}`, [], item)),
+    ],
     good_practice: [],
     next_steps: [],
   };
@@ -544,17 +653,18 @@ async function createAiReport(inspection, items) {
   const needsTranscripts = items.some((i) => i.hasAudio && !i.transcript);
   if (needsTranscripts && engine === 'openai' && !openaiKey) return fail('Add your OpenAI key in Settings first.');
   if (!anthropicKey) return fail('Add your Anthropic key in Settings first.');
-  if (items.length > MAX_AI_PHOTOS) return fail(`AI reports support up to ${MAX_AI_PHOTOS} photos. This inspection has ${items.length}.`);
+  const stored = photoItems(items);
+  if (stored.length > MAX_AI_PHOTOS) return fail(`AI reports support up to ${MAX_AI_PHOTOS} photos. This inspection has ${stored.length}.`);
   if (!navigator.onLine) return fail("You're offline. Your inspection is saved, so try again when you have signal.");
 
   try {
     await whileBusy(async () => {
       await transcribePending(items, say);
 
-      const maxEdge = items.length > 30 ? 1100 : 1568;
+      const maxEdge = stored.length > 30 ? 1100 : 1568;
       const photos = [];
-      for (const [n, { id }] of items.entries()) {
-        say(`Preparing photo ${n + 1} of ${items.length}…`);
+      for (const [n, { id }] of stored.entries()) {
+        say(`Preparing photo ${n + 1} of ${stored.length}…`);
         const item = await db.getItem(id);
         const { bytes } = await toJpeg(await db.getMedia(db.photoKey(id)), maxEdge, 0.8);
         photos.push({ number: n + 1, transcript: item.transcript, note: item.note, base64: toBase64(bytes) });
@@ -564,6 +674,7 @@ async function createAiReport(inspection, items) {
       inspection.report = await draftReport({
         inspection,
         photos,
+        generalNotes: generalNotes(items),
         key: anthropicKey,
         onActivity: () => say('Writing your report. Nearly there…'),
       });
@@ -579,7 +690,7 @@ async function createAiReport(inspection, items) {
 
 async function buildWordFile(inspection, items, report, { suffix = '', ...options } = {}) {
   const photos = [];
-  for (const [n, { id }] of items.entries()) {
+  for (const [n, { id }] of photoItems(items).entries()) {
     const item = await db.getItem(id);
     const { bytes, width, height } = await toJpeg(await db.getMedia(db.photoKey(id)), 1400, 0.8);
     photos.push({
@@ -592,7 +703,11 @@ async function buildWordFile(inspection, items, report, { suffix = '', ...option
       height,
     });
   }
-  const blob = buildDocx({ inspection, report, photos, ...options });
+  const notes = generalNotes(await db.itemsFor(inspection.id)).map((item) => ({
+    label: `General note ${item.number} (${clock(item.createdAt)})`,
+    text: [item.transcript, item.note].filter(Boolean).join(' — '),
+  }));
+  const blob = buildDocx({ inspection, report, photos, notes, ...options });
   const name = `${inspection.date} ${inspection.site}${suffix}`.replace(/[^\w -]+/g, '').trim();
   return new File([blob], `${name}.docx`, { type: blob.type });
 }
