@@ -6,6 +6,8 @@ import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper }
 const app = document.getElementById('app');
 const camera = document.getElementById('camera');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
+const APP_VERSION = 7;
+const THUMB_EDGE = 480;
 const RISKS = ['Low', 'Medium', 'High', 'Critical'];
 const COPILOT_PROMPT = `You are helping a workplace safety professional. The attached document contains numbered site inspection photos, each followed by the inspector's notes. Look at every photo and write a site inspection report with a summary, findings, risk ratings, recommended actions and timeframes. Refer to photos by number. Use only the document as evidence and keep the inspector's judgement. Do not invent facts or cite regulations unless the notes do. If you cannot view a photo, say so. Mark anything you add from a photo as "AI-suggested". Risk ratings and timeframes are suggestions for the inspector to review.`;
 
@@ -17,6 +19,7 @@ let startupNotice = '';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const today = () => new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
 const clock = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const thumbUrl = (item) => urlFor(new Blob([item.thumb], { type: 'image/jpeg' }));
 const urlFor = (blob) => {
   const url = URL.createObjectURL(blob);
   objectUrls.push(url);
@@ -89,8 +92,8 @@ async function inspectionScreen(id) {
     </div>
     <div class="grid">
       ${items.map((item, n) => `<a class="thumb" href="#/i/${id}/${item.id}">
-        <img src="${urlFor(item.photo)}" alt="Photo ${n + 1}">
-        <span>${n + 1}${item.audio ? ' 🎙' : ''}${item.note ? ' ✎' : ''}</span>
+        <img src="${thumbUrl(item)}" alt="Photo ${n + 1}">
+        <span>${n + 1}${item.hasAudio ? ' 🎙' : ''}${item.note ? ' ✎' : ''}</span>
       </a>`).join('')}
     </div>
     <div style="margin-top:32px"><button class="danger" data-action="delete">Delete inspection</button></div>`;
@@ -112,13 +115,15 @@ async function itemScreen(id, itemId) {
   if (!item) return go(`#/i/${id}`);
   const items = await db.itemsFor(id);
   const number = items.findIndex((i) => i.id === itemId) + 1;
+  const photo = await db.getMedia(db.photoKey(itemId));
+  const audio = item.hasAudio ? await db.getMedia(db.audioKey(itemId)) : null;
   app.innerHTML = `${header(`Photo ${number}`, `#/i/${id}`)}
-    <img class="photo" src="${urlFor(item.photo)}" alt="Photo ${number}">
+    <img class="photo" src="${urlFor(photo)}" alt="Photo ${number}">
     <div class="stack" style="margin-top:12px">
-      <button class="primary big" data-action="record">${item.audio ? 'Re-record note' : 'Record note'}</button>
+      <button class="primary big" data-action="record">${audio ? 'Re-record note' : 'Record note'}</button>
       <p class="error" data-role="record-error" hidden></p>
     </div>
-    ${item.audio ? `<audio controls src="${urlFor(item.audio)}"></audio>` : ''}
+    ${audio ? `<audio controls src="${urlFor(audio)}"></audio>` : ''}
     ${item.transcript ? `<label>Transcript <textarea data-field="transcript">${esc(item.transcript)}</textarea></label>` : ''}
     <label>Typed note (optional) <textarea data-field="note" placeholder="Or tap the mic on your keyboard to dictate">${esc(item.note)}</textarea></label>
     <div class="stack" style="margin-top:16px">
@@ -162,7 +167,7 @@ async function reportScreen(id) {
     ${report.findings.map((f, n) => `<section class="finding">
       <span class="tag ${f.risk.toLowerCase()}">${esc(f.risk)}</span>
       ${f.source === 'ai_observation' ? '<span class="tag ai">AI-suggested</span>' : ''}
-      ${f.photos.map((p) => items[p - 1] ? `<img src="${urlFor(items[p - 1].photo)}" alt="Photo ${p}">` : '').join('')}
+      ${f.photos.map((p) => items[p - 1] ? `<img src="${thumbUrl(items[p - 1])}" alt="Photo ${p}">` : '').join('')}
       <p class="muted">${f.photos.length ? `Photo ${f.photos.join(', ')}` : 'No photo'}</p>
       <label>Title <input data-path="findings.${n}.title" value="${esc(f.title)}"></label>
       <label>Risk rating <select data-path="findings.${n}.risk">${RISKS.map((r) => `<option ${r === f.risk ? 'selected' : ''}>${r}</option>`).join('')}</select></label>
@@ -209,7 +214,7 @@ async function reportScreen(id) {
 }
 
 async function reportStartScreen(inspection, items) {
-  const audioCount = items.filter((i) => i.audio).length;
+  const audioCount = items.filter((i) => i.hasAudio).length;
   const engine = (await db.getSetting('transcribeWith')) ?? 'phone';
   app.innerHTML = `${header('Create report', `#/i/${inspection.id}`)}
     <p>${items.length} photo${items.length === 1 ? '' : 's'}, ${audioCount} audio note${audioCount === 1 ? '' : 's'}.</p>
@@ -241,7 +246,7 @@ async function reportStartScreen(inspection, items) {
   const say = (text) => { progress.hidden = false; progress.textContent = text; };
   // Returns false if the user chooses not to carry on without every transcript.
   const transcribeNotes = async () => {
-    if (engine !== 'phone' || !items.some((i) => i.audio && !i.transcript)) return true;
+    if (engine !== 'phone' || !items.some((i) => i.hasAudio && !i.transcript)) return true;
     try {
       await whileBusy(() => transcribePending(items, say));
       progress.hidden = true;
@@ -341,7 +346,8 @@ async function settingsScreen() {
       <label>OpenAI API key <input data-key="openaiKey" value="${esc(openaiKey)}" autocomplete="off" autocapitalize="off" spellcheck="false" type="password"></label>`}
     <label>Anthropic API key (writes the report) <input data-key="anthropicKey" value="${esc(anthropicKey)}" autocomplete="off" autocapitalize="off" spellcheck="false" type="password"></label>
     <p class="muted">Keys are stored only on this phone and only sent to their own service.</p>
-    <p class="muted">${storage} Photos and audio are only on this phone. Saving the Word document is how you keep a copy elsewhere.</p>`;
+    <p class="muted">${storage} Photos and audio are only on this phone. Saving the Word document is how you keep a copy elsewhere.</p>
+    <p class="muted">App version ${APP_VERSION}</p>`;
   app.querySelectorAll('[data-key]').forEach((el) => {
     el.onchange = async () => {
       await db.setSetting(el.dataset.key, el.value.trim());
@@ -381,15 +387,17 @@ function openCamera(inspectionId) {
 camera.onchange = async () => {
   const file = camera.files[0];
   if (!file) return;
+  const photo = new Blob([await file.arrayBuffer()], { type: file.type });
   const item = {
     id: crypto.randomUUID(),
     inspectionId: camera.dataset.inspection,
-    photo: new Blob([await file.arrayBuffer()], { type: file.type }),
-    audio: null,
+    thumb: (await toJpeg(photo, THUMB_EDGE, 0.7)).bytes.buffer,
+    hasAudio: false,
     transcript: '',
     note: '',
     createdAt: Date.now(),
   };
+  await db.putMedia(db.photoKey(item.id), photo);
   await db.putItem(item);
   go(`#/i/${item.inspectionId}/${item.id}`);
 };
@@ -426,7 +434,8 @@ async function toggleRecording(button, inspectionId, itemId) {
     recorder = null;
     const item = await db.getItem(itemId);
     if (item && chunks.length) {
-      item.audio = new Blob(chunks, { type: rec.mimeType || 'audio/mp4' });
+      await db.putMedia(db.audioKey(itemId), new Blob(chunks, { type: rec.mimeType || 'audio/mp4' }));
+      item.hasAudio = true;
       item.transcript = '';
       await db.putItem(item);
     }
@@ -491,10 +500,8 @@ async function whileBusy(work) {
   }
 }
 
-// Note on readings: on iPhones, a stored photo or audio Blob can stop being readable once its
-// note has been saved again. Always fetch the note just before reading its media.
 async function transcribePending(items, say) {
-  const needed = items.filter((i) => i.audio && !i.transcript);
+  const needed = items.filter((i) => i.hasAudio && !i.transcript);
   if (!needed.length) return;
   const [engine, openaiKey, whisperModel] = await Promise.all(
     ['transcribeWith', 'openaiKey', 'whisperModel'].map(db.getSetting));
@@ -505,16 +512,17 @@ async function transcribePending(items, say) {
   try {
     for (const [n, { id }] of needed.entries()) {
       const label = `audio note ${n + 1} of ${needed.length}`;
-      const item = await db.getItem(id); // see the note on readings below
+      const item = await db.getItem(id);
+      const audio = await db.getMedia(db.audioKey(id));
       let text;
       if (useOpenAi) {
         say(`Transcribing ${label}…`);
-        text = await transcribe(item.audio, openaiKey);
+        text = await transcribe(audio, openaiKey);
       } else {
         say(`Loading the speech model for ${label}…`);
         await loadWhisper(model);
         say(`Transcribing ${label}…`);
-        text = await transcribeOnPhone(item.audio, model);
+        text = await transcribeOnPhone(audio, model);
         releaseWhisper(); // a fresh start for each note keeps memory from building up
       }
       item.transcript = text || '(no speech detected)';
@@ -541,7 +549,7 @@ async function createAiReport(inspection, items) {
 
   const [engine, openaiKey, anthropicKey] = await Promise.all(
     ['transcribeWith', 'openaiKey', 'anthropicKey'].map(db.getSetting));
-  const needsTranscripts = items.some((i) => i.audio && !i.transcript);
+  const needsTranscripts = items.some((i) => i.hasAudio && !i.transcript);
   if (needsTranscripts && engine === 'openai' && !openaiKey) return fail('Add your OpenAI key in Settings first.');
   if (!anthropicKey) return fail('Add your Anthropic key in Settings first.');
   if (items.length > MAX_AI_PHOTOS) return fail(`AI reports support up to ${MAX_AI_PHOTOS} photos. This inspection has ${items.length}.`);
@@ -556,7 +564,7 @@ async function createAiReport(inspection, items) {
       for (const [n, { id }] of items.entries()) {
         say(`Preparing photo ${n + 1} of ${items.length}…`);
         const item = await db.getItem(id);
-        const { bytes } = await toJpeg(item.photo, maxEdge, 0.8);
+        const { bytes } = await toJpeg(await db.getMedia(db.photoKey(id)), maxEdge, 0.8);
         photos.push({ number: n + 1, transcript: item.transcript, note: item.note, base64: toBase64(bytes) });
       }
 
@@ -581,7 +589,7 @@ async function buildWordFile(inspection, items, report, { suffix = '', ...option
   const photos = [];
   for (const [n, { id }] of items.entries()) {
     const item = await db.getItem(id);
-    const { bytes, width, height } = await toJpeg(item.photo, 1400, 0.8);
+    const { bytes, width, height } = await toJpeg(await db.getMedia(db.photoKey(id)), 1400, 0.8);
     photos.push({
       number: n + 1,
       time: clock(item.createdAt),
@@ -654,7 +662,27 @@ async function route() {
   }
 }
 
+// Moves photos and audio saved by earlier versions into separate storage.
+async function migrateMedia() {
+  for (const inspection of await db.allInspections()) {
+    for (const item of await db.itemsFor(inspection.id)) {
+      if (!item.photo) continue;
+      try {
+        const { photo, audio, ...rest } = item;
+        await db.putMedia(db.photoKey(item.id), photo);
+        if (audio) await db.putMedia(db.audioKey(item.id), audio);
+        rest.thumb = (await toJpeg(photo, THUMB_EDGE, 0.7)).bytes.buffer;
+        rest.hasAudio = Boolean(audio);
+        await db.putItem(rest);
+      } catch (err) {
+        console.error('Could not move saved media', item.id, err);
+      }
+    }
+  }
+}
+
 async function start() {
+  await migrateMedia();
   if (await db.getSetting('transcribing')) {
     await db.setSetting('transcribing', false);
     startupNotice = 'Transcription stopped before it finished, possibly because the phone ran low on memory or the app was closed. Finished notes are saved. Close other apps and tap the report button again to continue. If it keeps happening, choose the Small speech model in Settings.';

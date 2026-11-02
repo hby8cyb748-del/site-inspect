@@ -4,12 +4,15 @@ let dbPromise;
 
 function open() {
   dbPromise ??= new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
+    const req = indexedDB.open(DB_NAME, 2);
+    req.onupgradeneeded = ({ oldVersion }) => {
       const db = req.result;
-      db.createObjectStore('inspections', { keyPath: 'id' });
-      db.createObjectStore('items', { keyPath: 'id' }).createIndex('inspectionId', 'inspectionId');
-      db.createObjectStore('settings');
+      if (oldVersion < 1) {
+        db.createObjectStore('inspections', { keyPath: 'id' });
+        db.createObjectStore('items', { keyPath: 'id' }).createIndex('inspectionId', 'inspectionId');
+        db.createObjectStore('settings');
+      }
+      if (oldVersion < 2) db.createObjectStore('media');
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -35,7 +38,13 @@ export const allInspections = async () =>
 
 export const getItem = (id) => run('items', 'readonly', (s) => s.get(id));
 export const putItem = (v) => run('items', 'readwrite', (s) => s.put(v));
-export const deleteItem = (id) => run('items', 'readwrite', (s) => s.delete(id));
+export async function deleteItem(id) {
+  await run('media', 'readwrite', (s) => {
+    s.delete(photoKey(id));
+    s.delete(audioKey(id));
+  });
+  await run('items', 'readwrite', (s) => s.delete(id));
+}
 export const itemsFor = async (inspectionId) =>
   (await run('items', 'readonly', (s) => s.index('inspectionId').getAll(inspectionId)))
     .sort((a, b) => a.createdAt - b.createdAt);
@@ -43,6 +52,21 @@ export const itemsFor = async (inspectionId) =>
 export async function deleteInspection(id) {
   for (const item of await itemsFor(id)) await deleteItem(item.id);
   await run('inspections', 'readwrite', (s) => s.delete(id));
+}
+
+// Photos and audio live apart from notes as plain bytes. On iPhones, saving a stored Blob again can
+// leave it unreadable until the app restarts, so note edits must never touch them.
+export const photoKey = (id) => `${id}:photo`;
+export const audioKey = (id) => `${id}:audio`;
+
+export async function putMedia(key, blob) {
+  const buffer = await blob.arrayBuffer();
+  await run('media', 'readwrite', (s) => s.put({ buffer, type: blob.type }, key));
+}
+
+export async function getMedia(key) {
+  const media = await run('media', 'readonly', (s) => s.get(key));
+  return media && new Blob([media.buffer], { type: media.type });
 }
 
 export const getSetting = (k) => run('settings', 'readonly', (s) => s.get(k));

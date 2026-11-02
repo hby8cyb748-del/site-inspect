@@ -1,5 +1,5 @@
 // Keeps the app itself available with no signal. Bump VERSION when files change.
-const VERSION = 'v6';
+const VERSION = 'v7';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest', 'icon-180.png', 'icon-512.png',
   'js/app.js', 'js/ai.js', 'js/db.js', 'js/docx.js', 'js/whisper.js', 'js/whisper-worker.js',
