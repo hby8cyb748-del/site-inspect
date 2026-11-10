@@ -152,7 +152,7 @@ SCREENS['s3/findings'] = (inc) => page(inc, 'findings', `
   <p class="muted">Facts, observations, findings, conclusions and recommendations are kept apart. Each needs evidence, or a statement that evidence is unavailable. Causal wording without evidence is not accepted.</p>
   ${W.FINDING_TYPES.map(([type, label]) => `<h3>${esc(label)}s</h3>
     ${recordCards(inc, 'findings', { filter: (f) => f.type === type, empty: `No ${label.toLowerCase()}s yet.` })}
-    <div style="margin-top:6px">${addButton('findings', `Add a ${label.toLowerCase()}`, { type }, 'small')}</div>`).join('')}`);
+    <div style="margin-top:6px">${addButton('findings', `Add ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label.toLowerCase()}`, { type }, 'small')}</div>`).join('')}`);
 
 RECORD_EXTRAS.findings = {
   summary: (inc, r) => `${findingStatus(r)} · ${plural((r.evidence ?? []).length, 'evidence link')}${M.findingProblems(inc, r).some((p) => p.blocking) ? ' · needs work' : ''}`,

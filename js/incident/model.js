@@ -57,11 +57,11 @@ export function createIncident(ctx, start = {}) {
   const inc = {
     schema: SCHEMA,
     id: uid(),
-    ref: `INC-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}`,
+    ref: start.ref ?? `INC-${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}`,
     createdAt: at,
     updatedAt: at,
     createdBy: who(ctx),
-    demo: false,
+    demo: Boolean(start.demo), // demonstration incidents hold synthetic information only
     stage: 1,
     level: null,
     closedAt: null,
@@ -481,6 +481,8 @@ function derivedItems(inc) {
   for (const [key, def] of Object.entries(QUESTIONS)) {
     const value = answer(inc, key);
     if (!value || !def.flag?.includes(value)) continue;
+    // "Yes, someone is hurt or exposed" is dealt with once the people affected are on the file.
+    if (value === 'yes' && (key === 's1.p.injured' || key === 's1.p.exposed') && records(inc, 'people').length) continue;
     const reassurance = def.adverse === 'yes' && value === 'no';
     add(`q:${key}`, def.item ?? (reassurance ? `Recorded as No — confirm it still holds: ${def.q}` : `${def.q} ${answerLabel(key, value)}`), {
       urgent: def.urgent?.includes(value) ?? false, stage: def.stage, basis: value, locked: false, link: `s${def.stage}/${def.section}`,

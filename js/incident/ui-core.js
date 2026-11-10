@@ -208,7 +208,7 @@ export function strip(inc) {
     <div class="chips">
       <a class="chip ${st.urgent ? 'urgent' : 'ok'}" href="${href(inc, 'open')}">${st.urgent ? `${st.urgent} urgent` : 'No urgent items'}</a>
       <a class="chip link" href="${href(inc, 'open')}">${st.open} open</a>
-      <span class="chip">${S.savedAt ? `Saved ${time(S.savedAt)}` : `Saved ${time(inc.updatedAt)}`}</span>
+      <span class="chip">${S.savedAt ? `Saved ${time(S.savedAt)}` : `Last change ${dateTime(inc.updatedAt)}`}</span>
       <span class="chip ${adapter.isOnline() ? '' : 'offline'}">${adapter.isOnline() ? 'Online' : 'Offline — still working'}</span>
       <span class="chip">${esc(syncText(inc))}</span>
     </div>
