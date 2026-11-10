@@ -233,3 +233,6 @@ canvas.markup { display: block; width: 100%; border-radius: 12px; background: #0
 button.chip { width: auto; min-height: 36px; padding: 4px 12px; cursor: pointer; }
 button.chip.stage { background: var(--ink); color: var(--bg); }
 button.pick { font-weight: 400; font-size: 15px; }
+.card .state { float: none; display: inline-block; margin: 6px 8px 0 0; }
+.card .state + .muted { display: block; margin-top: 4px; }
+.chip.urgent, .state.attention { background: #b3261e; border-color: #b3261e; color: #fff; }
