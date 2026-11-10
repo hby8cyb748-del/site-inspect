@@ -4,6 +4,7 @@ import * as store from './store.js';
 import { renderHome } from './ui-stage1.js';
 import './ui-evidence.js';
 import './ui-overview.js';
+import './ui-stage2.js';
 
 export { renderHome };
 

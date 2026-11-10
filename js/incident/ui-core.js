@@ -156,6 +156,8 @@ async function onChange(e) {
   try {
     const ok = await act((inc, c) => applyBind(inc, c, el.dataset.bind, readValue(el)), 'rerender' in el.dataset);
     el.classList.toggle('invalid', !ok);
+    // A refused choice goes back to what is actually saved, so the screen never shows something that is not on file.
+    if (!ok && el.tagName === 'SELECT') el.value = el.querySelector('option[selected]')?.value ?? '';
   } catch (err) {
     console.error(err);
     toast(`That change could not be saved. ${err.message}`, 'error');

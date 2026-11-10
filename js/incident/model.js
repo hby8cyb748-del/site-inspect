@@ -392,7 +392,11 @@ const ON_CHANGE = {
       text: `Exposure status for ${r.name || r.number}: ${labelOf(COLLECTIONS.people.fields.find((f) => f.k === 'exposureStatus').options, r.exposureStatus)}`,
     },
   },
-  witnesses: { interviewCompleted: (r) => r.interviewCompleted === 'yes' && { category: 'action', text: `Interview completed with witness ${r.name || r.number}` } },
+  witnesses: {
+    interviewCompleted: (r) => r.interviewCompleted === 'yes' && { category: 'action', text: `Interview completed with witness ${r.name || r.number}` },
+    // What a witness says goes on the timeline as a witness account, never as a confirmed fact.
+    account: (r) => r.account && { category: 'witness', text: `Account from ${r.name || r.number}: ${r.account}`, chain: 'accountEntryId' },
+  },
   evidence: { status: (r) => ({ category: 'action', text: `Evidence ${r.number} status: ${labelOf(EVIDENCE_STATUS, r.status)}` }) },
   support: { status: (r) => r.status === 'received' && { category: 'communication', text: `Support received: ${r.kind || 'support'}` } },
 };
@@ -418,7 +422,13 @@ export function updateRecord(inc, ctx, collection, id, patch) {
     audit(inc, ctx, 'record.update', `${collection}/${rec.number}.${k}`, restricted ? { restricted: true } : { from: previous, to: v });
     rec[k] = v;
     const line = ON_CHANGE[collection]?.[k]?.(rec, previous);
-    if (line) entry(inc, ctx, { ...line, ref: { type: collection, id: rec.id } });
+    if (line) {
+      // A changed account is a linked correction of the earlier one, so both stay visible.
+      const { chain, ...rest } = line;
+      const earlier = chain && rec[chain] && !supersededBy(inc, rec[chain]) ? rec[chain] : null;
+      const added = entry(inc, ctx, { ...rest, ref: { type: collection, id: rec.id }, corrects: earlier, reason: earlier ? 'Updated' : undefined });
+      if (chain) rec[chain] = added.id;
+    }
   }
   rec.updatedAt = when(ctx);
   // Changing what an approved finding says sends it back to draft so it is reviewed again.
