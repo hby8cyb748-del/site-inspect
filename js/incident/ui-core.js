@@ -166,7 +166,8 @@ export function toast(message, kind = 'info') {
   app().querySelector('.toast')?.remove();
   app().insertAdjacentHTML('beforeend', `<div class="toast ${kind}" role="alert" data-act="toast-close">${esc(message)}<span class="muted"> Tap to dismiss.</span></div>`);
   S.handlers['toast-close'] = (el) => el.closest('.toast').remove();
-  if (kind !== 'error') setTimeout(() => app().querySelector('.toast')?.remove(), 5000);
+  const shown = app().querySelector('.toast');
+  setTimeout(() => shown.remove(), kind === 'error' ? 12000 : 5000);
 }
 
 export function sheet(title, body, handlers = {}) {
@@ -422,6 +423,7 @@ SCREENS.r = (inc, [, collection, id]) => {
          <button class="danger" data-act="void-record">Withdraw this ${esc(def.label.toLowerCase())}</button>
        </div>
        <p class="muted">Recorded ${dateTime(rec.createdAt)} by ${esc(rec.createdBy)}. Changes save as you go and are kept in the audit history.</p>`;
+  setTimeout(() => extras.after?.(inc, rec)); // for anything slow, such as decrypting a photo
   screen(frame(inc, `${rec.number} ${def.label}`, back, body), {
     ...extras.handlers?.(inc, rec),
     'void-record': () => sheet(`Withdraw ${rec.number}`, `<p>Nothing is deleted. The record stays in the file, marked as withdrawn with your reason.</p>

@@ -522,6 +522,7 @@ export const COLLECTIONS = {
     fields: [
       { k: 'kind', label: 'Type of evidence', type: 'select', options: EVIDENCE_KINDS },
       { k: 'description', label: 'Description', type: 'area' },
+      { k: 'transcript', label: 'Transcript of the voice note or voice caption', type: 'area' },
       { k: 'docType', label: 'Document type (if a document)', type: 'select', options: DOC_TYPES },
       { k: 'guide', label: 'Photo guide (if a photograph)', type: 'select', options: PHOTO_GUIDE },
       { k: 'capturedAt', label: 'Date and time captured', type: 'datetime' },

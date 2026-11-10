@@ -2,6 +2,8 @@
 import { S, TOP, SCREENS, loadUser, load, forget, go, href, refreshStrip, syncSoon } from './ui-core.js';
 import * as store from './store.js';
 import { renderHome } from './ui-stage1.js';
+import './ui-evidence.js';
+import './ui-overview.js';
 
 export { renderHome };
 
