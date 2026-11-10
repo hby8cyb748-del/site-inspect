@@ -1,0 +1,9 @@
+{
+  "name": "site-inspect",
+  "private": true,
+  "type": "module",
+  "description": "No build step. This file only lets Node run the logic tests with: npm test",
+  "scripts": {
+    "test": "node --test tests/"
+  }
+}
