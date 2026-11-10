@@ -124,6 +124,44 @@ export async function draftReport({ inspection, photos, generalNotes, key, onAct
   }
 }
 
+// A general request for incident mode drafts. Same service, model and settings as the report above.
+// Returns the parsed JSON that matches `schema`.
+export async function askClaude({ system, content, schema, key, onActivity }) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2026-10-21',
+      'anthropic-beta': 'server-side-fallback-2026-07-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 32000,
+      stream: true,
+      fallbacks: 'default',
+      system,
+      thinking: { type: 'adaptive' },
+      output_config: {
+        effort: 'high',
+        format: { type: 'json_schema', schema },
+      },
+      messages: [{ role: 'user', content }],
+    }),
+  });
+  if (!res.ok) throw await failure('Claude', res);
+
+  const { text, stopReason } = await readStream(res, onActivity);
+  if (stopReason === 'refusal') throw new Error('Claude declined to write this draft.');
+  if (stopReason === 'max_tokens') throw new Error('The draft was too long and was cut off. Please try again.');
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error('The draft came back incomplete. Please try again.');
+  }
+}
+
 async function readStream(res, onActivity) {
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';

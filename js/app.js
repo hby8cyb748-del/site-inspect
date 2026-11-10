@@ -1,13 +1,15 @@
 import * as db from './db.js';
 import { createDataKey, lockKey, unlockKey } from './crypto.js';
-import { transcribe, draftReport } from './ai.js';
-import { buildDocx } from './docx.js';
+import { transcribe, draftReport, askClaude } from './ai.js';
+import { buildDocx, buildDocument } from './docx.js';
 import { MODELS, DEFAULT_MODEL, loadWhisper, transcribeOnPhone, releaseWhisper } from './whisper.js';
+import * as incident from './incident/index.js';
 
 const app = document.getElementById('app');
 const camera = document.getElementById('camera');
+const filePicker = document.getElementById('filepick');
 const MAX_AI_PHOTOS = 100; // API limit on images in one request
-const APP_VERSION = 11
+const APP_VERSION = 12
 const MIN_PIN_LENGTH = 6;
 const AUTO_LOCK_MS = 5 * 60 * 1000;
 const SWIPE_OPEN_PX = -96;;
@@ -22,6 +24,7 @@ let startupNotice = '';
 let unlocked = false;
 let cameraOpen = false;
 let hiddenAt = null;
+let captureHandler = null; // set when incident mode asks for the next photo
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const today = () => new Date().toLocaleDateString('en-CA'); // yyyy-mm-dd in local time
@@ -49,11 +52,33 @@ function header(title, back) {
 
 // Screens
 
+// The home screen has two modes. "Site inspection" is the original app. "Incident" is the incident advisor.
 async function homeScreen() {
+  const mode = (await db.getSetting('homeMode')) === 'incident' ? 'incident' : 'inspection';
+  const top = `
+    <header class="top"><h1>Site Inspect</h1><a class="button icon" href="#/settings" style="width:auto;border:0;background:none">Settings</a></header>
+    <div class="modes">
+      <button data-mode="inspection" class="${mode === 'inspection' ? 'on' : ''}" aria-pressed="${mode === 'inspection'}">Site inspection</button>
+      <button data-mode="incident" class="${mode === 'incident' ? 'on' : ''}" aria-pressed="${mode === 'incident'}">Incident</button>
+    </div>`;
+  if (mode === 'incident') await incident.renderHome(top);
+  else await inspectionHome(top);
+  app.querySelectorAll('[data-mode]').forEach((button) => {
+    button.onclick = async () => {
+      await db.setSetting('homeMode', button.dataset.mode);
+      const target = button.dataset.mode === 'incident' ? '#/inc' : '#/';
+      if (location.hash === target || (target === '#/' && !location.hash)) homeScreen();
+      else go(target);
+    };
+  });
+}
+
+async function inspectionHome(top) {
   const inspections = await db.allInspections();
   const contents = await Promise.all(inspections.map((i) => db.itemsFor(i.id)));
-  app.innerHTML = `
-    <header class="top"><h1>Site Inspect</h1><a class="button icon" href="#/settings" style="width:auto;border:0;background:none">Settings</a></header>
+  app.onclick = null;
+  app.onchange = null;
+  app.innerHTML = `${top}
     <button class="primary big" data-action="new">New inspection</button>
     <h2>Inspections</h2>
     ${inspections.length ? inspections.map((i, n) => `
@@ -458,6 +483,10 @@ async function settingsScreen() {
     <label>Anthropic API key (writes the report) <input data-key="anthropicKey" value="${esc(anthropicKey)}" autocomplete="off" autocapitalize="off" spellcheck="false" type="password"></label>
     <p class="muted">Keys are stored only on this phone and only sent to their own service.</p>
     <p class="muted">${storage} Photos and audio are only on this phone. Saving the Word document is how you keep a copy elsewhere.</p>
+    <h2>Incident mode</h2>
+    <div class="stack">
+      <a class="button" href="#/inc/settings">Incident settings and demo scenarios</a>
+    </div>
     <h2>PIN lock</h2>
     <p class="muted">The app locks itself after ${AUTO_LOCK_MS / 60000} minutes in the background.</p>
     <div class="stack">
@@ -519,18 +548,44 @@ async function settingsScreen() {
 // Capture
 
 function openCamera(inspectionId) {
+  captureHandler = null;
   camera.dataset.inspection = inspectionId;
   camera.value = '';
   cameraOpen = true;
   camera.click();
 }
 
-camera.oncancel = () => { cameraOpen = false; };
+camera.oncancel = () => { cameraOpen = false; captureHandler = null; };
+
+// Incident mode uses the same camera, and is handed the photo instead of it becoming an inspection item.
+function capturePhoto(handler) {
+  captureHandler = handler;
+  camera.value = '';
+  cameraOpen = true;
+  camera.click();
+}
+
+// Any file from the phone (a document, a saved photo, a video). The file itself is passed on unchanged.
+function chooseFile(handler) {
+  filePicker.value = '';
+  filePicker.onchange = () => {
+    cameraOpen = false;
+    if (filePicker.files[0]) handler(filePicker.files[0]);
+  };
+  filePicker.oncancel = () => { cameraOpen = false; };
+  cameraOpen = true;
+  filePicker.click();
+}
 
 camera.onchange = async () => {
   cameraOpen = false;
   const file = camera.files[0];
   if (!file) return;
+  if (captureHandler) {
+    const handler = captureHandler;
+    captureHandler = null;
+    return handler(file);
+  }
   const photo = new Blob([await file.arrayBuffer()], { type: file.type });
   const item = {
     id: crypto.randomUUID(),
@@ -591,6 +646,60 @@ async function toggleRecording(button, inspectionId, itemId) {
   button.classList.add('recording');
   button.textContent = 'Stop recording  0:00';
   app.querySelector('[data-action=next]').disabled = true;
+}
+
+// The same recorder as inspection notes, for incident mode: the finished recording is handed to onBlob.
+async function recordAudio(button, onBlob, onError) {
+  if (recorder) { recorder.stop(); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    onError('Microphone is blocked. Allow it in iPhone Settings, or type instead.');
+    return;
+  }
+  const type = pickAudioType();
+  const rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  const chunks = [];
+  const label = button.textContent;
+  const started = Date.now();
+  const tick = setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    button.textContent = `Stop recording  ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 500);
+  rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = async () => {
+    clearInterval(tick);
+    stream.getTracks().forEach((t) => t.stop());
+    recorder = null;
+    button.classList.remove('recording');
+    button.textContent = label;
+    if (chunks.length) await onBlob(new Blob(chunks, { type: rec.mimeType || 'audio/mp4' }));
+  };
+  rec.start();
+  recorder = rec;
+  button.classList.add('recording');
+  button.textContent = 'Stop recording  0:00';
+}
+
+// Transcribes one recording with whichever engine is chosen in Settings.
+async function transcribeBlob(blob, say) {
+  const [engine, openaiKey, whisperModel] = await Promise.all(
+    ['transcribeWith', 'openaiKey', 'whisperModel'].map(db.getSetting));
+  if (engine === 'openai') {
+    if (!openaiKey) throw new Error('Add your OpenAI key in Settings first.');
+    say('Transcribing…');
+    return transcribe(blob, openaiKey);
+  }
+  const model = whisperModel ?? DEFAULT_MODEL;
+  try {
+    say('Loading the speech model…');
+    await loadWhisper(model);
+    say('Transcribing on this phone…');
+    return await transcribeOnPhone(blob, model);
+  } finally {
+    releaseWhisper();
+  }
 }
 
 // Reports
@@ -800,8 +909,14 @@ async function route() {
   if (recorder) recorder.stop();
   objectUrls.forEach(URL.revokeObjectURL);
   objectUrls = [];
+  app.onclick = null; // incident screens listen on the app element; inspection screens do not
+  app.onchange = null;
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  if (parts[0] === 'new') await newScreen();
+  if (parts[0] === 'inc' && parts.length > 1) await incident.route(parts.slice(1));
+  else if (parts[0] === 'inc') {
+    await db.setSetting('homeMode', 'incident');
+    await homeScreen();
+  } else if (parts[0] === 'new') await newScreen();
   else if (parts[0] === 'settings') await settingsScreen();
   else if (parts[0] === 'i' && parts[2] === 'report') await reportScreen(parts[1]);
   else if (parts[0] === 'i' && parts[2]) await itemScreen(parts[1], parts[2]);
@@ -895,6 +1010,7 @@ async function openApp(key) {
   app.innerHTML = `${header('Site Inspect')}<p>Securing your saved inspections…</p>`;
   await migrateMedia();
   await db.sealExisting();
+  await incident.unlock(key);
   if (await db.getSetting('transcribing')) {
     await db.setSetting('transcribing', false);
     startupNotice = 'Transcription stopped before it finished, possibly because the phone ran low on memory or the app was closed. Finished notes are saved. Close other apps and tap the report button again to continue. If it keeps happening, choose the Small speech model in Settings.';
@@ -906,6 +1022,7 @@ async function openApp(key) {
 async function lockApp() {
   unlocked = false;
   db.setDataKey(null);
+  incident.lock();
   objectUrls.forEach(URL.revokeObjectURL);
   objectUrls = [];
   lockScreen(await db.getSetting('lock'));
@@ -926,6 +1043,13 @@ document.addEventListener('visibilitychange', () => {
   } else {
     setTimeout(() => { cameraOpen = false; }, 3000); // not every iPhone reports a cancelled camera
   }
+});
+
+incident.init({
+  app, db, esc, header, go, urlFor, toJpeg, toBase64, whileBusy, deliver, capturePhoto, chooseFile, recordAudio,
+  transcribeBlob, askClaude, buildDocument,
+  rerender: () => route(),
+  unlocked: () => unlocked,
 });
 
 window.addEventListener('hashchange', route);

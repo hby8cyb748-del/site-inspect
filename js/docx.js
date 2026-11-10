@@ -125,6 +125,24 @@ const CONTENT_TYPES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
 
+// Wraps finished body XML and its images into a .docx file. media: [{ jpeg (Uint8Array) }]
+function pack(body, media) {
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1418" w:bottom="1134" w:left="1418" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+
+  const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${media.map((_, i) => `<Relationship Id="rIdImg${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${i + 1}.jpg"/>`).join('')}</Relationships>`;
+
+  return zip([
+    { name: '[Content_Types].xml', data: encoder.encode(CONTENT_TYPES) },
+    { name: '_rels/.rels', data: encoder.encode(ROOT_RELS) },
+    { name: 'word/document.xml', data: encoder.encode(documentXml) },
+    { name: 'word/styles.xml', data: encoder.encode(STYLES) },
+    { name: 'word/_rels/document.xml.rels', data: encoder.encode(docRels) },
+    ...media.map((p, i) => ({ name: `word/media/image${i + 1}.jpg`, data: p.jpeg })),
+  ]);
+}
+
 // photos: [{ number, time, transcript, note, jpeg (Uint8Array), width, height }]
 export function buildDocx({ inspection, report, photos, title = 'Safety Inspection Report', heading = 'Findings', appendix = true, notes = [] }) {
   const byNumber = new Map(photos.map((p) => [p.number, p]));
@@ -193,18 +211,24 @@ export function buildDocx({ inspection, report, photos, title = 'Safety Inspecti
     body += table(log);
   }
 
-  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1418" w:bottom="1134" w:left="1418" w:header="567" w:footer="567" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+  return pack(body, media);
+}
 
-  const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>${media.map((_, i) => `<Relationship Id="rIdImg${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${i + 1}.jpg"/>`).join('')}</Relationships>`;
-
-  return zip([
-    { name: '[Content_Types].xml', data: encoder.encode(CONTENT_TYPES) },
-    { name: '_rels/.rels', data: encoder.encode(ROOT_RELS) },
-    { name: 'word/document.xml', data: encoder.encode(documentXml) },
-    { name: 'word/styles.xml', data: encoder.encode(STYLES) },
-    { name: 'word/_rels/document.xml.rels', data: encoder.encode(docRels) },
-    ...media.map((p, i) => ({ name: `word/media/image${i + 1}.jpg`, data: p.jpeg })),
-  ]);
+// A general document for incident mode: a title, a details table, then blocks in order.
+// blocks: { h1 } | { h2 } | { p, bold } | { bullet } | { rows: [[label, value, fill]] } | { image: { jpeg, width, height }, caption }
+export function buildDocument({ title, details = [], blocks = [] }) {
+  const media = [];
+  let body = para(title, 'Title');
+  if (details.length) body += table(details);
+  for (const b of blocks) {
+    if (b.h1 !== undefined) body += para(b.h1, 'Heading1');
+    else if (b.h2 !== undefined) body += para(b.h2, 'Heading2');
+    else if (b.rows) body += b.rows.length ? table(b.rows) : '';
+    else if (b.bullet !== undefined) body += bullet(b.bullet);
+    else if (b.image) {
+      media.push(b.image);
+      body += imageXml(`rIdImg${media.length}`, media.length, b.image, b.caption ?? '') + para(b.caption ?? '');
+    } else body += para(b.p ?? '', null, b.bold);
+  }
+  return pack(body, media);
 }

@@ -43,6 +43,11 @@ function audit(inc, ctx, action, target, detail) {
   inc.updatedAt = when(ctx);
 }
 
+// Looking is not changing, but looking at restricted information is still written to the audit history.
+export function recordAccess(inc, ctx, what) {
+  audit(inc, ctx, 'access', what, {});
+}
+
 // Creating an incident
 
 export function createIncident(ctx, start = {}) {
@@ -1190,6 +1195,7 @@ function situationLines(inc) {
     tag: !status || status === 'unknown' ? 'unknown' : inc.answers[DANGER_QUESTION]?.verified ? 'confirmed' : 'unverified',
   }];
   if (filled(field(inc, 'danger', 'atRisk'))) lines.push({ text: `People remaining at risk: ${field(inc, 'danger', 'atRisk')}`, tag: 'unverified' });
+  if (filled(field(inc, 'response', 'lead'))) lines.push({ text: `Incident response lead: ${field(inc, 'response', 'lead')}`, tag: 'confirmed' });
   for (const q of GROUPS.scene.questions) if (answer(inc, q.k)) lines.push(answerLine(inc, q.k));
   return lines;
 }
@@ -1235,6 +1241,7 @@ export function initialBrief(inc, { health = false } = {}) {
     {
       title: 'Next actions',
       items: none([
+        ...(filled(field(inc, 'response', 'nextDecision')) ? [{ text: `Next operational decision: ${field(inc, 'response', 'nextDecision')}`, tag: 'confirmed' }] : []),
         ...notificationLines(inc, false),
         ...records(inc, 'actions').filter((a) => !actionFinished(a)).map((a) => ({ text: `${a.number} ${a.description || 'not described'} — ${a.owner || 'no owner'} — ${ACTION_STATES[a.state]}`, tag: 'confirmed' })),
         ...openItems(inc).filter((i) => !i.urgent && !i.key.startsWith('action:') && !i.key.startsWith('notification:')).map((i) => ({ text: i.text, tag: 'unverified' })),
