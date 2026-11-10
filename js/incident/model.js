@@ -667,7 +667,11 @@ export function suggestClassification(inc) {
     if (!rank.includes(p.treatment)) missing.push(`Treatment level not recorded for ${p.name || p.number}`);
   }
 
-  if (worst && worst !== 'none') {
+  // A reported or confirmed exposure where no one has needed more than first aid is classed by the
+  // exposure, because the medical outcome is not yet known. More serious treatment is classed by treatment.
+  const exposureLed = (exposures.includes('confirmed') || exposures.includes('reported')) && (!worst || worst === 'none' || worst === 'firstaid');
+  if (exposureLed && worst === 'firstaid') used.push('First aid was given');
+  if (worst && worst !== 'none' && !exposureLed) {
     values.eventType = 'Injury';
     values.injuryCategory = { firstaid: 'First aid injury', medical: 'Medical treatment injury', restricted: 'Restricted work injury', losttime: 'Lost time injury' }[worst];
     values.actual = { firstaid: CONSEQUENCES[1], medical: CONSEQUENCES[2], restricted: CONSEQUENCES[2], losttime: CONSEQUENCES[3] }[worst];
