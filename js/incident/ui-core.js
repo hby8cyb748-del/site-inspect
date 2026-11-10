@@ -17,6 +17,7 @@ export const S = {
   settings: {},
   handlers: {},
   focus: {}, // which question is being re-asked, per group
+  live: {}, // parts of the screen that are redrawn after each save without redrawing the whole screen
   healthAt: null, // the screen on which health information is currently shown
   lastSection: null,
   saving: Promise.resolve(),
@@ -218,6 +219,17 @@ export function strip(inc) {
 export function refreshStrip() {
   const el = app().querySelector('[data-role=strip]');
   if (el && S.inc) el.outerHTML = strip(S.inc);
+  for (const [key, draw] of Object.entries(S.live)) {
+    const part = app().querySelector(`[data-live="${key}"]`);
+    if (part) part.innerHTML = draw();
+  }
+}
+
+// A block that keeps itself up to date while the advisor types elsewhere on the screen (for example
+// the list of problems with a finding). Typing is never interrupted by a full redraw.
+export function live(key, draw) {
+  S.live[key] = draw;
+  return `<div data-live="${key}">${draw()}</div>`;
 }
 
 export function dangerBanner(inc) {

@@ -599,6 +599,15 @@ export function completeStage(inc, ctx, n) {
   if (n === 2) planFromGaps(inc, ctx);
 }
 
+// Sign-off by the nominated reviewer or approver. Recorded against their name, never assumed.
+export function approveInvestigation(inc, ctx, name) {
+  need(ctx, 'approve', 'Approving the investigation');
+  if (!inc.stages[3]?.completedAt) throw new RuleError('Submit the investigation for review first.');
+  Object.assign(inc.stages[3], { approvedAt: when(ctx), approvedBy: (name || who(ctx)).trim() });
+  audit(inc, ctx, 'investigation.approve', inc.ref, { approvedBy: inc.stages[3].approvedBy });
+  entry(inc, ctx, { category: 'decision', text: `Investigation approved by ${inc.stages[3].approvedBy}.` });
+}
+
 export function setLevel(inc, ctx, level) {
   editing(ctx);
   const value = Number(level);

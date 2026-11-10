@@ -7,7 +7,7 @@ const FILES = [
   'js/app.js', 'js/ai.js', 'js/crypto.js', 'js/db.js', 'js/docx.js', 'js/whisper.js', 'js/whisper-worker.js',
   'js/incident/index.js', 'js/incident/model.js', 'js/incident/workflow.js', 'js/incident/store.js', 'js/incident/adapter.js',
   'js/incident/ui-core.js', 'js/incident/ui-stage1.js', 'js/incident/ui-evidence.js', 'js/incident/ui-overview.js',
-  'js/incident/ui-stage2.js',
+  'js/incident/ui-stage2.js', 'js/incident/ui-stage3.js',
   'vendor/transformers.min.js', 'vendor/ort-wasm-simd-threaded.mjs', 'vendor/ort-wasm-simd-threaded.wasm',
 ];
 

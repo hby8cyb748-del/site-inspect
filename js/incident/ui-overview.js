@@ -378,7 +378,7 @@ const sectionsHtml = (sections) => `<div class="brief">${sections.map((s) => `<h
     <ul>${s.items.map((i) => `<li>${vTag(i.tag)} ${esc(i.text)}</li>`).join('')}</ul>`).join('')}</div>`;
 
 // Photos that are not restricted are added to the Word version of the investigation report.
-async function evidenceImages(inc) {
+export async function evidenceImages(inc) {
   const blocks = [];
   const photos = M.records(inc, 'evidence').filter((e) => e.mediaType?.startsWith('image/') && (e.restriction ?? 'none') === 'none').slice(0, 40);
   for (const e of photos) {
@@ -405,7 +405,7 @@ export async function wordFile(inc, title, sections, extraBlocks = []) {
     ],
     blocks: [...blocks, ...extraBlocks],
   });
-  return new File([blob], `${title.replace(/[^\w -]+/g, '').trim()}.docx`, { type: blob.type });
+  return new File([blob], `${title.replace(/—/g, '-').replace(/[^\w -]+/g, '').trim()}.docx`, { type: blob.type });
 }
 
 SCREENS.summary = (inc, [, tab = 'handover']) => {

@@ -5,6 +5,7 @@ import { renderHome } from './ui-stage1.js';
 import './ui-evidence.js';
 import './ui-overview.js';
 import './ui-stage2.js';
+import './ui-stage3.js';
 
 export { renderHome };
 
@@ -35,6 +36,7 @@ export function lock() {
 // parts: everything after "#/inc/", for example ['new'] or [incidentId, 's1', 'danger'].
 export async function route(parts) {
   const [first, ...rest] = parts;
+  S.live = {};
   if (TOP[first]) return TOP[first](rest);
   const inc = await load(first);
   if (!inc) return go('#/inc');
