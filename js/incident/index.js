@@ -6,6 +6,7 @@ import './ui-evidence.js';
 import './ui-overview.js';
 import './ui-stage2.js';
 import './ui-stage3.js';
+import './ai-drafts.js';
 
 export { renderHome };
 
